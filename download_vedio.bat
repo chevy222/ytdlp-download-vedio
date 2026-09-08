@@ -60,12 +60,13 @@ set "COOKIE_DIR=%YTDLP_DIR%"
 rem Max video height
 set "MAX_H=1080"
 
-rem Output template. Multi-part videos automatically get a " P2" style suffix.
+rem Output template. For multi-part videos (e.g. bilibili multi-P) yt-dlp's
+rem title already ends with " p01 ...", " p02 ...", so parts never collide.
 rem Alternatives:
 rem   %%(uploader)s - %%(title).180B.%%(ext)s
 rem   %%(upload_date)s %%(title).180B.%%(ext)s
 rem   %%(title).180B [%%(id)s].%%(ext)s
-set "OUT_TPL=%%(title).180B%%(playlist_index& P{}|)s.%%(ext)s"
+set "OUT_TPL=%%(title).180B.%%(ext)s"
 
 rem Input method: 0 = command line (recommended, needs no PowerShell)
 rem                1 = popup dialog (needs PowerShell 7 or 5.1, prefills clipboard)
@@ -227,7 +228,7 @@ echo "%URL%" | findstr /i /c:"bilibili.com" /c:"b23.tv" >nul && set "SITE=bilibi
 rem ---------- extract domain from URL, match cookie ----------
 set "TMPHOST=%URL:*//=%"
 set "HOST="
-for /f "delims=/?" %%H in ("%TMPHOST%") do set "HOST=%%H"
+for /f "delims=/?&" %%H in ("%TMPHOST%") do set "HOST=%%H"
 if not defined HOST set "HOST=%TMPHOST%"
 
 set "COOKIE_OPT="
@@ -260,7 +261,7 @@ if "%MODE%"=="list" (
     -N %FRAGMENTS% --retries 10 --fragment-retries 10 --file-access-retries 3 ^
     --console-title ^
     -P "%OUT_DIR%" -o "%OUT_TPL%" ^
-    --print-to-file after_move:"%(filepath)s" "%LASTFILE%" ^
+    --print-to-file after_move:"%%(filepath)s" "%LASTFILE%" ^
     %PROXY_OPT% %COOKIE_OPT% ^
     "%URL%"
 
@@ -273,7 +274,7 @@ if errorlevel 1 (
     echo   3. Format not available: run  f URL  to list real formats
     echo   4. Cookie expired: export cookies.txt again
     echo.
-    goto AFTER_AMP
+    goto NEXT_ROUND
 )
 
 rem ---------- download succeeded, amplify if enabled ----------
@@ -287,6 +288,8 @@ call :AMPLIFY "%OUTFILE%"
 :AFTER_AMP
 echo.
 echo   Done. Files are in: %OUT_DIR%
+
+:NEXT_ROUND
 if not "%~1"=="" goto END
 goto LOOP
 
@@ -301,7 +304,10 @@ rem    1) volumedetect reports max_volume, e.g. -6.0 dB
 rem    2) gain = the value without minus sign = 6.0 dB, pushing the loudest
 rem       peak exactly to 0 dBFS, no clipping
 rem    3) only the integer part is tested: -0.x dB means skip, never clip
-rem    4) audio bitrate follows the source, clamped to 64-192k
+rem    4) a positive peak means the source already clips, skip, never boost
+rem    5) files with more than one audio track are skipped: the peak was
+rem       measured on one track and one bitrate cannot fit all tracks
+rem    6) audio bitrate follows the source, clamped to 64-192k
 rem  Video is copied untouched (-c:v copy), cover art survives too
 rem ==========================================================================
 :AMPLIFY
@@ -312,7 +318,17 @@ if not exist "%SRC%" exit /b 0
 
 set "VOLFILE=%TEMP%\ytdlp_vol.txt"
 set "ABRFILE=%TEMP%\ytdlp_abr.txt"
+set "CNTFILE=%TEMP%\ytdlp_cnt.txt"
 set "MAXVOL="
+
+rem single audio track only: volumedetect measures one track, see header
+"%FFPROBE_EXE%" -v error -select_streams a -show_entries stream=index -of csv=p=0 "%SRC%" > "%CNTFILE%" 2>nul
+set "ACNT=0"
+for /f "usebackq delims=" %%s in ("%CNTFILE%") do set /a ACNT+=1
+if %ACNT% GTR 1 (
+    echo   Volume   : %ACNT% audio tracks, skipped
+    exit /b 0
+)
 
 rem volumedetect prints at info level, so no -v error here
 "%FFMPEG_EXE%" -hide_banner -nostats -nostdin -i "%SRC%" -vn -af volumedetect -f null NUL 2>&1 | find "max_volume" > "%VOLFILE%"
@@ -322,6 +338,12 @@ if not defined MAXVOL (
     exit /b 0
 )
 
+rem a positive or zero peak means the source is already at (or over) full
+rem scale, boosting it would only clip harder
+if not "%MAXVOL:~0,1%"=="-" (
+    echo   Volume   : peak %MAXVOL% dB, already at or over full scale, skipped
+    exit /b 0
+)
 set "GAIN=%MAXVOL:-=%"
 set "GI=0"
 for /f "delims=." %%i in ("%GAIN%") do set "GI=%%i"
@@ -350,5 +372,10 @@ if errorlevel 1 (
     exit /b 0
 )
 move /y "%TMPOUT%" "%SRC%" >nul
+if errorlevel 1 (
+    echo   Volume   : could not replace the original, file in use?
+    echo   Amplified copy kept as: %TMPOUT%
+    exit /b 0
+)
 echo   Volume   : peak %MAXVOL% dB, amplified %GAIN% dB to full scale (audio %ABK%k, video untouched)
 exit /b 0
