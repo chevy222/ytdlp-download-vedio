@@ -19,7 +19,9 @@ rem    3) Prefix the URL with "f " to only list available formats
 rem    4) Type q / quit / exit and press Enter to leave the loop
 rem
 rem  Pipeline:
-rem    - Up to 1080p, H.264+AAC preferred for direct stream copy into MP4
+rem    - Up to 1080p on the SHORT side of the frame (portrait Shorts
+rem      1080x1920 counts as 1080p), H.264+AAC preferred for direct stream
+rem      copy into MP4
 rem    - If only >1080p source exists, download best and re-encode with Intel
 rem      QSV HEVC (falls back to libx265 if QSV unavailable). Cover art is
 rem      preserved via -map 0 with per-stream codec overrides.
@@ -57,12 +59,24 @@ set "PROXY_URL=socks5://127.0.0.1:10808"
 rem Cookie directory. Files are named <HOST>_cookies.txt
 set "COOKIE_DIR=%YTDLP_DIR%"
 
-rem Max video height. Sources above this are re-encoded down to it.
+rem Max video quality, measured on the SHORT side of the frame. Landscape
+rem 1080p = 1920x1080; portrait 1080p (Shorts) = 1080x1920. Sources above
+rem this are re-encoded down to it.
 set "MAX_H=1080"
+
+rem Long-side companion of MAX_H (16:9, rounded up). yt-dlp format filters
+rem can only test width and height separately, so "1080p of either
+rem orientation" is expressed as: BOTH dimensions <= MAX_LONG. This admits
+rem 1920x1080 AND 1080x1920 while still excluding 1440p+ (2560x1440 /
+rem 1440x2560).
+set /a MAX_LONG=(MAX_H*16+8)/9
 
 rem Hard ceiling for what we are willing to DOWNLOAD. Without it an 8K-only
 rem video would download tens of GB only to be re-encoded to MAX_H anyway.
 set "MAX_DL_H=2160"
+
+rem Same long-side companion for the download ceiling above.
+set /a MAX_DL_LONG=(MAX_DL_H*16+8)/9
 
 rem Output template. For multi-part videos (e.g. bilibili multi-P) yt-dlp's
 rem title already ends with " p01 ...", " p02 ...", so parts never collide.
@@ -170,17 +184,20 @@ if not exist "%OUT_DIR%" (
 )
 
 rem ---------- quality / codec policy ----------
-rem Chain:
-rem   1. H.264 <=MAX_H + AAC          (best case: pure stream copy into MP4)
-rem   2. H.264 <=MAX_H + best audio   (audio will be transcoded to AAC on merge)
-rem   3. any codec <=MAX_H + best audio
-rem   4. single file <=MAX_H          (a native <=MAX_H file beats downloading
-rem      a >MAX_H stream just to re-encode it back down)
-rem   5. any codec <=MAX_DL_H + best audio   (triggers the rebuild step, and
-rem      MAX_DL_H keeps an 8K-only video from downloading tens of GB)
+rem Chain. Height AND width are capped at MAX_LONG (not MAX_H): a Shorts
+rem 1080P stream is 1080x1920 - height 1920 - and a plain height<=MAX_H
+rem filter would silently drop it to 480x854. Capping both dimensions
+rem admits the 1080p tier of either orientation. See MAX_LONG above.
+rem   1. H.264 <=MAX_LONG dims + AAC   (best case: pure stream copy into MP4)
+rem   2. H.264 <=MAX_LONG dims + best audio   (audio transcoded to AAC on merge)
+rem   3. any codec <=MAX_LONG dims + best audio
+rem   4. single file <=MAX_LONG dims  (a native <=MAX_H file beats downloading
+rem      a bigger stream just to re-encode it back down)
+rem   5. any codec <=MAX_DL_LONG dims + best audio   (triggers the rebuild
+rem      step, and MAX_DL_H keeps an 8K-only video from downloading tens of GB)
 rem   6. best video + best audio, any resolution
 rem   7. best single file, any resolution
-set "FORMAT=bv*[height<=%MAX_H%][vcodec*=avc]+ba[acodec*=mp4a]/bv*[height<=%MAX_H%][vcodec*=avc]+ba/bv*[height<=%MAX_H%]+ba/b[height<=%MAX_H%]/bv*[height<=%MAX_DL_H%]+ba/bv*+ba/b"
+set "FORMAT=bv*[height<=%MAX_LONG%][width<=%MAX_LONG%][vcodec*=avc]+ba[acodec*=mp4a]/bv*[height<=%MAX_LONG%][width<=%MAX_LONG%][vcodec*=avc]+ba/bv*[height<=%MAX_LONG%][width<=%MAX_LONG%]+ba/b[height<=%MAX_LONG%][width<=%MAX_LONG%]/bv*[height<=%MAX_DL_LONG%][width<=%MAX_DL_LONG%]+ba/bv*+ba/b"
 
 rem Sort: H.264 first, then `lang` so the original audio track beats dubbed
 rem ones, then quality / resolution / fps; AAC preferred for MP4 compat.
@@ -330,10 +347,11 @@ exit /b 0
 
 
 rem ==========================================================================
-rem  PROBE_HEIGHT - set NEEDV=1 when the file is taller than MAX_H.
-rem  Also sets MAINV: cover art (mjpeg/png/bmp/gif) can sit at v:0 depending
-rem  on the muxer / yt-dlp version; then the real video stream is v:1 and
-rem  REBUILD must feed THAT one through the scale filter, never the cover.
+rem  PROBE_HEIGHT - set NEEDV=1 when the MAIN video stream's SHORT side is
+rem  above MAX_H. Portrait video (Shorts): 1080x1920 IS 1080p - its height
+rem  1920 must not trigger a downscale, its short side 1080 must.
+rem  Also sets MAINV (cover-art stream offset) and SCL (orientation-aware
+rem  scale target for REBUILD: cap the short side, keep the other side).
 rem ==========================================================================
 :PROBE_HEIGHT
 if not defined FFPROBE_EXE exit /b 0
@@ -341,34 +359,57 @@ set "SRC=%~1"
 if not defined SRC exit /b 0
 if not exist "%SRC%" exit /b 0
 
-rem one probe feeds both the height check and the MAINV detection
-"%FFPROBE_EXE%" -v error -select_streams v:0 -show_entries stream=codec_name,height -of csv=p=0 "%SRC%" > "%HFILE%" 2>nul
+rem one probe feeds the size check and the MAINV detection
+"%FFPROBE_EXE%" -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of csv=p=0 "%SRC%" > "%HFILE%" 2>nul
 set "V0C="
-set "HEIGHT="
-for /f "usebackq tokens=1,2 delims=," %%c in ("%HFILE%") do if not defined HEIGHT (
+set "W0="
+set "H0="
+for /f "usebackq tokens=1,2,3 delims=," %%c in ("%HFILE%") do if not defined H0 (
     set "V0C=%%c"
-    set "HEIGHT=%%d"
+    set "W0=%%d"
+    set "H0=%%e"
 )
 
-rem cover art at v:0 means the real video stream is v:1
+rem cover art at v:0 means the real video stream is v:1; probe THAT one,
+rem the cover's dimensions say nothing about the video
 set "MAINV=0"
 if /i "%V0C%"=="mjpeg" set "MAINV=1"
 if /i "%V0C%"=="png"   set "MAINV=1"
 if /i "%V0C%"=="bmp"   set "MAINV=1"
 if /i "%V0C%"=="gif"   set "MAINV=1"
-if not defined HEIGHT exit /b 0
+set "MAINW=%W0%"
+set "MAINH=%H0%"
+if "%MAINV%"=="1" (
+    "%FFPROBE_EXE%" -v error -select_streams v:1 -show_entries stream=width,height -of csv=p=0 "%SRC%" > "%HFILE%" 2>nul
+    set "MAINW="
+    set "MAINH="
+    for /f "usebackq tokens=1,2 delims=," %%c in ("%HFILE%") do if not defined MAINH (
+        set "MAINW=%%c"
+        set "MAINH=%%d"
+    )
+)
+if not defined MAINW exit /b 0
+if not defined MAINH exit /b 0
 
-rem ffprobe can return N/A; comparing that as a number would be a string
+rem both sides must be numbers; comparing N/A as a number would be a string
 rem compare and would wrongly decide "needs transcode"
-echo %HEIGHT%| findstr /r "^[0-9][0-9]*$" >nul
+echo %MAINW%%MAINH%| findstr /r "^[0-9][0-9]*$" >nul
 if not "%ERRORLEVEL%"=="0" (
-    echo   Transcode: height "%HEIGHT%" is not a number, skipped
+    echo   Transcode: size "%MAINW%x%MAINH%" is not numeric, skipped
     exit /b 0
 )
 
-if %HEIGHT% LEQ %MAX_H% exit /b 0
+rem quality lives on the SHORT side; the scale target caps it:
+rem portrait/square caps the width (MAX_H:-2), landscape caps the height
+set "SCL=%MAX_H%:-2"
+set "SHORTSIDE=%MAINW%"
+if %MAINH% LSS %MAINW% (
+    set "SCL=-2:%MAX_H%"
+    set "SHORTSIDE=%MAINH%"
+)
+if %SHORTSIDE% LEQ %MAX_H% exit /b 0
 set "NEEDV=1"
-set "VTXT=scale to %MAX_H%p HEVC ^(source %HEIGHT%p^)"
+set "VTXT=scale to %MAX_H%p HEVC ^(source %MAINW%x%MAINH%^)"
 exit /b 0
 
 
@@ -470,11 +511,12 @@ if not exist "%SRC%" exit /b 0
 
 rem Scaling path decodes on the GPU. -hwaccel qsv feeds QSV frames straight
 rem into the filter graph, so hwdownload is mandatory before the CPU scale.
+rem SCL comes from PROBE_HEIGHT: it caps the SHORT side, whichever it is.
 set "VOPT=-c:v copy"
 set "DECOPT="
 if "%NEEDV%"=="1" (
     set "DECOPT=-hwaccel qsv"
-    set "VOPT=-c:v:%MAINV% hevc_qsv -global_quality 22 -preset slower -tag:v:%MAINV% hvc1 -filter:v:%MAINV% hwdownload,format=nv12,scale=-2:%MAX_H%"
+    set "VOPT=-c:v:%MAINV% hevc_qsv -global_quality 22 -preset slower -tag:v:%MAINV% hvc1 -filter:v:%MAINV% hwdownload,format=nv12,scale=%SCL%"
 )
 set "AOPT=-c:a copy"
 if "%NEEDA%"=="1" set "AOPT=-af volume=%GAIN%dB -c:a aac -b:a %ABK%k"
@@ -499,7 +541,7 @@ del "%TMPOUT%" >nul 2>&1
     -i "%SRC%" ^
     -map 0 -c copy ^
     -c:v:%MAINV% libx265 -crf 22 -preset %X265_PRESET% -tag:v:%MAINV% hvc1 ^
-    -filter:v:%MAINV% scale=-2:%MAX_H% ^
+    -filter:v:%MAINV% scale=%SCL% ^
     %AOPT% ^
     -movflags +faststart "%TMPOUT%"
 if not "%ERRORLEVEL%"=="0" goto REBUILD_FAILED

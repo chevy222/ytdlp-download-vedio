@@ -14,7 +14,7 @@
 |---|---|---|
 | >1080P 源 | 格式串硬过滤 `height<=1080`，4K-only 视频**下不到** | 允许回落 `bv*+ba`，抓到 4K 后自动 **Intel QSV HEVC 硬件转码**到 1080P；QSV 不可用时回落 `libx265` 软件编码 |
 | 视频重编码 | 永远 `-c:v copy`（画质零损失，但拿不到 4K 内容） | ≤1080P 源仍是 `-c:v copy`；>1080P 源才触发重编码 |
-| 封面在转码后 | N/A（不转码） | `-map 0 -c copy -c:v:0 hevc_qsv -filter:v:0 scale=-2:1080`，只重编主视频流，mjpeg 封面流原样保留、`attached_pic=1` 标记不丢 |
+| 封面在转码后 | N/A（不转码） | `-map 0 -c copy -c:v:0 hevc_qsv -filter:v:0 scale=<短边定向：竖屏 1080:-2 / 横屏 -2:1080>`，只重编主视频流，mjpeg 封面流原样保留、`attached_pic=1` 标记不丢 |
 | 其它所有特性 | — | 与参考脚本一致 |
 
 ---
@@ -23,7 +23,7 @@
 
 | 项目 | 行为 |
 |---|---|
-| 画质 | 最高 1080P，H.264+AAC 优先直拷；>1080P 源自动 QSV HEVC 硬件转码到 1080P |
+| 画质 | 最高 1080P（按**短边**计：竖屏 Shorts 的 1080x1920 就是 1080P），H.264+AAC 优先直拷；超过则自动 QSV HEVC 硬件转码到 1080P |
 | 容器 | 统一 MP4（`--merge-output-format mp4 --remux-video mp4`） |
 | 封面 | 缩略图转 JPG 后作为 attached_pic 嵌入（`--embed-thumbnail --convert-thumbnails jpg`），转码链路中通过 `-map 0` 保留 |
 | 元数据 | 标题、UP 主、来源链接、语言标签写入文件（`--embed-metadata`） |
@@ -88,7 +88,7 @@ set "AUTO_UPDATE=0"
 | `OUT_DIR` | 下载输出目录 | `%USERPROFILE%\Desktop` 不存在时自动回落 `%OneDrive%\Desktop` |
 | `PROXY_URL` | 代理地址（仅 YouTube / Aaaornhub 使用） | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://` |
 | `COOKIE_DIR` | Cookie 目录 | 默认与 yt-dlp 同目录 |
-| `MAX_H` | 最大高度上限，超过则触发 QSV HEVC 转码 | 1080；改 720 可省空间 |
+| `MAX_H` | 最大画质上限（按**短边**计，竖屏 1080x1920 = 1080P），超过则触发 QSV HEVC 转码 | 1080；改 720 可省空间 |
 | `OUT_TPL` | 输出文件名模板 | 见[文件名模板备选](#文件名模板备选) |
 | `FRAGMENTS` | DASH/HLS 并发分片数 | 4；被限速时改成 1 |
 | `AMPLIFY_ON` | 音量归一化开关 | 1 开 / 0 关 |
@@ -146,16 +146,18 @@ Enter URL: https://www.bilibili.com/video/BV1xx411c7mD
 
 ### 格式选择串（`FORMAT`）
 
-七级回落，从"最优直拷"到"兜底"，能不重编码就不重编码：
+七级回落，从"最优直拷"到"兜底"，能不重编码就不重编码。
+
+**为什么要同时限制宽和高**：yt-dlp 的过滤器只能分别测 width / height，而"1080P"有两种形态——横屏 1920x1080、竖屏 1080x1920（YouTube Shorts）。如果只写 `height<=1080`，竖屏 1080P 流（高度 1920）会被前几级整级排除，实际回落到 **480x854**。所以前四级改用 `MAX_LONG = MAX_H*16/9`（1080→1920，脚本自动计算）**同时卡宽和高**：两种方向的 1080P 都放行，1440P+（2560x1440 / 1440x2560）依然被挡住。
 
 ```
-bv*[height<=1080][vcodec*=avc]+ba[acodec*=mp4a]   1. H.264 + AAC，纯 stream copy 到 MP4，零重编码
-bv*[height<=1080][vcodec*=avc]+ba                 2. H.264 + 任意音频（音频会被 yt-dlp 转成 AAC 合入 MP4）
-bv*[height<=1080]+ba                              3. 任意编码 ≤1080P + 最佳音频
-b[height<=1080]                                   4. 单文件 ≤1080P（无分离音视频流的老视频；也优先于第 5 级——有原生 1080P 就不下载 4K 再转回来）
-bv*[height<=2160]+ba                              5. 任意编码 ≤2160 + 最佳音频（触发重建，MAX_DL_H 挡住 8K）
-bv*+ba                                            6. 任意分辨率最佳音视频
-b                                                 7. 单文件兜底
+bv*[h<=1920][w<=1920][vcodec*=avc]+ba[acodec*=mp4a]  1. H.264 + AAC，纯 stream copy 到 MP4，零重编码
+bv*[h<=1920][w<=1920][vcodec*=avc]+ba                2. H.264 + 任意音频（音频会被 yt-dlp 转成 AAC 合入 MP4）
+bv*[h<=1920][w<=1920]+ba                             3. 任意编码 ≤1080P + 最佳音频
+b[h<=1920][w<=1920]                                  4. 单文件 ≤1080P（原生 ≤1080P 就不下载更大的流再转回来）
+bv*[h<=3840][w<=3840]+ba                             5. 任意编码 ≤2160 + 最佳音频（触发重建，MAX_DL_H 挡住 8K）
+bv*+ba                                               6. 任意分辨率最佳音视频
+b                                                    7. 单文件兜底
 ```
 
 ### 排序策略（`SORT`）
@@ -176,7 +178,7 @@ vcodec:h264, lang, quality, res, fps, acodec:aac, size, proto, ext
 
 流程：
 
-1. `PROBE_HEIGHT`：ffprobe **一次**读取 v:0 的编码与高度——编码用于识别封面流（mjpeg/png/bmp/gif 若在 v:0，真实视频在 v:1，转码作用到 v:1），高度做纯数字校验（`N/A` 之类的非数字会被跳过）。
+1. `PROBE_HEIGHT`：ffprobe **一次**读取 v:0 的编码与宽高——编码用于识别封面流（mjpeg/png/bmp/gif 若在 v:0，真实视频在 v:1，转码作用到 v:1，尺寸也改从 v:1 读取）；宽高**取短边**与 MAX_H 比较（竖屏 1080x1920 即 1080P，高度 1920 不会误触发降尺度），非数字（`N/A`）直接跳过。
 2. `PROBE_AUDIO`：ffprobe **一次**拿到音轨数与 a:0 码率 → `volumedetect` 峰值 → 增益（上限 `MAXGAIN` dB）。
 3. 两个都不需要改动时**直接跳过**，完全不重写文件。
 4. 需要改动才调用 `REBUILD`，一条命令完成：
@@ -184,10 +186,12 @@ vcodec:h264, lang, quality, res, fps, acodec:aac, size, proto, ext
 ```bat
 ffmpeg -y -i src.mp4 ^
   -map 0 -c copy ^
-  [-c:v:0 hevc_qsv -global_quality 22 -preset slower -tag:v:0 hvc1 -filter:v:0 scale=-2:1080] ^
+  [-c:v:0 hevc_qsv -global_quality 22 -preset slower -tag:v:0 hvc1 -filter:v:0 scale=<竖屏 1080:-2 / 横屏 -2:1080>] ^
   [-af volume=+9.5dB -c:a aac -b:a 128k] ^
   -movflags +faststart out.mp4
 ```
+
+缩放目标**按方向自动选择**：短边超过 MAX_H 才触发，竖屏（Shorts）封宽度（`1080:-2`），横屏封高度（`-2:1080`），保证 4K 竖屏源（1440x2560）正确降到 1080x1920 而不是 608x1080。
 
 - `-map 0 -c copy` 拿到全部流（主视频 / 音频 / mjpeg 封面 / 章节）
 - 只有主视频流和音频流被重编码（封面流在 v:0 时自动改作用到 v:1），封面原样保留、`attached_pic` 标记不丢
