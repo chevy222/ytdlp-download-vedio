@@ -280,7 +280,9 @@ if "%MODE%"=="list" (
     "%URL%"
 
 :AFTER_RUN
-if errorlevel 1 (
+rem text compare, not `if errorlevel 1`: that form is ">= 1" and misses the
+rem large negative exit codes a killed/crashed yt-dlp can produce
+if not "%ERRORLEVEL%"=="0" (
     echo.
     echo [FAILED] yt-dlp reported an error. Usual causes:
     echo   1. YouTube 403 / Sign in to confirm: needs PO Token or fresh cookies
