@@ -30,7 +30,7 @@
 | 字幕 | 不下载、不嵌入（`--no-write-subs --no-write-auto-subs --no-embed-subs`） |
 | 音轨 | `-S "vcodec:h264,lang,..."` 中的 `lang` 字段让**原声音轨**在多音轨视频里胜出配音轨 |
 | 音量 | 下载完成后峰值归一到 0 dBFS，保证不削波（见[音量放大原理](#音量放大原理amplify)） |
-| 代理 | 仅 `youtube.com` / `youtu.be` / `pornhub.com` 走 `socks5://127.0.0.1:10808`，其它直连 |
+| 代理 | 仅 `youtube.com` / `youtu.be` / `aaaornhub.com` 走 `socks5://127.0.0.1:10808`，其它直连 |
 | Cookie | 按 URL 真实 HOST 自动匹配（如 `m.bilibili.com_cookies.txt`），带站点级回退到 `www.<site>.com_cookies.txt` |
 | 合集 | `--no-playlist`，只下你点开的那一个视频 |
 | 并发 | `-N 4`（`--concurrent-fragments 4`），DASH/HLS 分片并行下载，B 站与 YouTube 提速 2–4 倍 |
@@ -51,7 +51,7 @@
 | [yt-dlp.exe](https://github.com/yt-dlp/yt-dlp/releases) | 建议 2025.11 起（YouTube 开始强制要求 JS 运行时） |
 | ffmpeg + ffprobe | 放同一目录；用于音画合并、封面嵌入、转码与音量处理。ffmpeg 需带 **hevc_qsv** 编码器（Intel 核显）；无 QSV 会自动回落 libx265 |
 | node.exe（或 deno） | yt-dlp 默认只启用 deno，本脚本显式指向 node，YouTube 必需。Node ≥ 20.0 |
-| Cookie 文件 | Netscape 格式。**B 站必需**（无 cookie 请求会返回 HTTP 412），YouTube / Pornhub 视登录需求可选 |
+| Cookie 文件 | Netscape 格式。**B 站必需**（无 cookie 请求会返回 HTTP 412），YouTube / Aaaornhub 视登录需求可选 |
 | Intel 核显（可选） | 有则 QSV HEVC 硬件转码，速度快、CPU 占用低；没有则用 libx265 软件编码，慢但结果一致 |
 
 ---
@@ -60,7 +60,7 @@
 
 ### 1. 修改 CONFIG 段指向你的路径
 
-打开 `yt-dlp-download.bat`，顶部 CONFIG 区所有可调项集中在一起：
+打开 `download_vedio.bat`，顶部 CONFIG 区所有可调项集中在一起：
 
 ```bat
 set "YTDLP_DIR=D:\Software\yt-dlp"
@@ -74,6 +74,10 @@ set "OUT_TPL=%%(title).180B.%%(ext)s"
 set "FRAGMENTS=4"
 set "AMPLIFY_ON=1"
 set "TRANSCODE_ON=1"
+set "MAX_DL_H=2160"
+set "MAXGAIN=24"
+set "X265_PRESET=fast"
+set "AUTO_UPDATE=0"
 ```
 
 | 变量 | 作用 | 建议 |
@@ -82,13 +86,17 @@ set "TRANSCODE_ON=1"
 | `FFMPEG_DIR` | ffmpeg.exe / ffprobe.exe 所在目录 | 找不到会回落到 PATH |
 | `NODE_DIR` | node.exe 所在目录（YouTube 必需） | 找不到会回落 PATH 里的 node → deno |
 | `OUT_DIR` | 下载输出目录 | `%USERPROFILE%\Desktop` 不存在时自动回落 `%OneDrive%\Desktop` |
-| `PROXY_URL` | 代理地址（仅 YouTube / Pornhub 使用） | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://` |
+| `PROXY_URL` | 代理地址（仅 YouTube / Aaaornhub 使用） | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://` |
 | `COOKIE_DIR` | Cookie 目录 | 默认与 yt-dlp 同目录 |
 | `MAX_H` | 最大高度上限，超过则触发 QSV HEVC 转码 | 1080；改 720 可省空间 |
 | `OUT_TPL` | 输出文件名模板 | 见[文件名模板备选](#文件名模板备选) |
 | `FRAGMENTS` | DASH/HLS 并发分片数 | 4；被限速时改成 1 |
 | `AMPLIFY_ON` | 音量归一化开关 | 1 开 / 0 关 |
 | `TRANSCODE_ON` | >MAX_H 转码开关 | 1 开 / 0 关（关掉后 4K 源将保留 4K） |
+| `MAX_DL_H` | **下载**高度的硬上限，防止 8K-only 源下几十 GB | 2160；见[格式链](#格式选择串format) |
+| `MAXGAIN` | 音频增益上限 dB | 24；防止近静音源被放大 50-90 dB 把底噪推到满刻度 |
+| `X265_PRESET` | libx265 兜底 preset | `fast`（比 `medium` 快约一倍，观感几乎无差） |
+| `AUTO_UPDATE` | 启动时跑一次 `yt-dlp -U` | 0 关 / 1 开 |
 
 ### 2. 按域名放 Cookie
 
@@ -97,13 +105,13 @@ Cookie 文件放到 `%COOKIE_DIR%`（默认 `D:\Software\yt-dlp\`），命名规
 ```
 www.bilibili.com_cookies.txt     B 站必需，否则 HTTP 412
 www.youtube.com_cookies.txt      可选，YouTube 要求登录时才需要
-www.pornhub.com_cookies.txt      可选
+www.aaaornhub.com_cookies.txt      可选
 m.bilibili.com_cookies.txt       移动端分享链会自动匹配这个（如果放了）
 ```
 
 匹配顺序：
 1. 从 URL 提取真实 HOST（如 `www.bilibili.com`），找 `<HOST>_cookies.txt`
-2. 找不到则回落到 `www.<SITE>.com_cookies.txt`（SITE = youtube / bilibili / pornhub / other）
+2. 找不到则回落到 `www.<SITE>.com_cookies.txt`（SITE = youtube / bilibili / aaaornhub / other）
 3. 都找不到就匿名下载
 
 ### 3. 双击运行
@@ -144,8 +152,10 @@ bv*[height<=1080][vcodec*=avc]+ba[acodec*=mp4a]   1. H.264 + AAC，纯 stream co
 bv*[height<=1080][vcodec*=avc]+ba                 2. H.264 + 任意音频（音频会被 yt-dlp 转成 AAC 合入 MP4）
 bv*[height<=1080]+ba                              3. 任意编码 ≤1080P + 最佳音频
 b[height<=1080]                                   4. 单文件 ≤1080P（无分离音视频流的老视频）
-bv*+ba                                            5. 任意分辨率最佳音视频（触发 TRANSCODE）
-b                                                 6. 单文件兜底
+bv*[height<=2160]+ba                              5. 任意编码 <=2160 + 最佳音频（触发重建，MAX_DL_H 挡住 8K）
+b[height<=1080]                                   6. 单文件 <=1080P（无分离音视频流的老视频）
+bv*+ba                                            7. 任意分辨率最佳音视频
+b                                                 8. 单文件兜底
 ```
 
 ### 排序策略（`SORT`）
@@ -160,42 +170,47 @@ vcodec:h264, lang, quality, res, fps, acodec:aac, size, proto, ext
 - `acodec:aac` —— AAC 优先，MP4 原生支持
 - `size, proto, ext` —— 兜底：文件小的优先、协议稳的优先、扩展名兼容的优先
 
-### TRANSCODE 子程序
+### 重建子程序（REBUILD）
 
-只有源高度 > `MAX_H` 时才触发（例如 4K YouTube 视频）。核心命令：
+下载完成后只跑**一次** ffmpeg，把「>MAX_H 降分辨率」和「音量归一化」一起做掉——早期版本是 TRANSCODE 写一遍、AMPLIFY 再写一遍，4K 大文件等于重写两次。
+
+流程：
+
+1. `PROBE_HEIGHT`：ffprobe 读高度，**先做纯数字校验**（`N/A` 之类的非数字会被跳过，否则字符串比较会误判成"需要转码"）。
+2. `PROBE_AUDIO`：音轨数 → `volumedetect` 峰值 → 增益（上限 `MAXGAIN` dB）→ 音频码率。
+3. 两个都不需要改动时**直接跳过**，完全不重写文件。
+4. 需要改动才调用 `REBUILD`，一条命令完成：
 
 ```bat
 ffmpeg -y -i src.mp4 ^
   -map 0 -c copy ^
-  -c:v:0 hevc_qsv -global_quality 22 -preset slower -tag:v:0 hvc1 ^
-  -filter:v:0 "scale=-2:1080" ^
-  -movflags +faststart dst.mp4
+  [-c:v:0 hevc_qsv -global_quality 22 -preset slower -tag:v:0 hvc1 -filter:v:0 scale=-2:1080] ^
+  [-af volume=+9.5dB -c:a aac -b:a 128k] ^
+  -movflags +faststart out.mp4
 ```
 
-关键技巧：
-- `-map 0` 拿到全部流（主视频 / 音频 / mjpeg 封面 / 章节 / 字幕）
-- `-c copy` 默认全部 stream copy
-- `-c:v:0 hevc_qsv` **只对第一条视频流**（主内容）重编码，封面（通常是 v:1 mjpeg）保持 copy
-- `-filter:v:0 scale=-2:1080` 缩放也只作用于 v:0
-- `-tag:v:0 hvc1` 让 Apple 设备/QuickTime 能播放 HEVC
-
-QSV 失败（无 Intel 核显、驱动异常、编码器不支持）会自动回落到 libx265 软件编码：
-
-```bat
--c:v:0 libx265 -crf 22 -preset medium
-```
-
-### 转码链路实测验证
-
-用一个伪造的 4K 源（3840×2160 H.264 + AAC 音轨 + mjpeg 封面 `attached_pic=1`）跑完 QSV HEVC 转码：
-
-| 流 | 源 | 输出 |
-|---|---|---|
-| v:0 | h264 3840×2160 | **hevc 1920×1080**，`hvc1` tag ✓ |
-| a:0 | aac 44.1kHz mono 116kbps | aac 44.1kHz mono 116kbps（参数完全一致，纯 copy）✓ |
-| v:1 | mjpeg 320×320 `attached_pic=1` | **mjpeg 320×320 `attached_pic=1`**（封面完整保留）✓ |
+- `-map 0 -c copy` 拿到全部流（主视频 / 音频 / mjpeg 封面 / 章节）
+- 只有 `v:0` 和音频流被重编码，封面原样保留、`attached_pic` 标记不丢
+- **用 `ERRORLEVEL` 而不是 `if not exist` 判断成败**：编码到一半失败时 ffmpeg 会留下残缺文件，只判断"文件存在"会把它 `move` 去覆盖原始下载
+- QSV 失败自动回落到 `libx265`（preset 由 `X265_PRESET` 控制）
+- 替换前还会校验产物大小（< 1 KB 视为失败，保留原文件）
 
 ---
+
+### 那个 `%TEMP%\ytdlp_last*.txt` 是什么
+
+日志最后一行 `Writing '%(filepath)s' to: ...\ytdlp_last.txt` 是 `--print-to-file` 的输出，**不是垃圾文件，删了后处理就失效**。
+
+原因：输出文件名来自视频标题（`%(title).180B.%(ext)s`），脚本在下载前无法预知最终叫什么。所以让 yt-dlp 下载完成后把**真实落盘路径**写进这个临时文件，后续的 `PROBE_HEIGHT` / `PROBE_AUDIO` / `REBUILD` 才知道该处理哪个文件。
+
+- 文件名带 `%RANDOM%` 后缀，同时开两个脚本实例不会互相踩
+- 脚本退出前会删掉；异常退出时残留也无害，下次启动会先删除
+- 如果想改别的传递方式，可以换成 `--print after_move` 配合 `-q` 直接用 `for /f` 捕获，但那样就看不到 yt-dlp 的下载进度了
+
+### 交互细节
+
+- **空回车不再退出循环**。误触 Enter 只会重新提示，只有 `q` / `quit` / `exit` 才退出（旧版空回车直接结束，和提示语不一致）。
+- **站点检测不再用 `echo | findstr`**：改成 `if not "%URL:youtube.com=%"=="%URL%"` 这种子串比较，不启动子进程，URL 里的 `^`、`%` 也不会被管道搞坏。
 
 ## 音量放大原理（AMPLIFY）
 
@@ -210,6 +225,9 @@ QSV 失败（无 Intel 核显、驱动异常、编码器不支持）会自动回
    - 没有音轨
 4. 视频流 `-c:v copy` **完全不重编**，画质零损失；封面靠 `-map 0` 保留
 5. 音轨重编为 AAC，码率跟随源文件，夹在 64–192k
+6. 增益超过 `MAXGAIN`（默认 24 dB）会被封顶——近静音源放大 50-90 dB 只会把底噪推到满刻度
+
+> 现在这一步和 >MAX_H 降分辨率合并成了一次 ffmpeg 调用，见[重建子程序](#重建子程序rebuild)。
 
 ```
 源峰值 : -9.5 dB
@@ -228,7 +246,7 @@ URL 检测靠 `findstr` 匹配关键字，命中即分流：
 | 站点关键字 | SITE 标签 | 代理 | Cookie 回落 |
 |---|---|---|---|
 | `youtube.com` / `youtu.be` | youtube | SOCKS5 10808 | `www.youtube.com_cookies.txt` |
-| `pornhub.com` | SOCKS5 10808 | `www.pornhub.com_cookies.txt` |
+| `aaaornhub.com` | SOCKS5 10808 | `www.aaaornhub.com_cookies.txt` |
 | `bilibili.com` / `b23.tv` | bilibili | 直连 | `www.bilibili.com_cookies.txt` |
 | 其它 | other | 直连 | 无 |
 
@@ -255,7 +273,7 @@ Enter URL: q     <-- 退出
 **c) 命令行传参**
 
 ```cmd
-yt-dlp-download.bat https://www.bilibili.com/video/BV1xx411c7mD
+download_vedio.bat https://www.bilibili.com/video/BV1xx411c7mD
 ```
 
 ### 只列可用画质（`f ` 前缀）
@@ -336,6 +354,8 @@ libx265 兜底速度大约是 QSV 的 1/5–1/10，但结果画质一致。
 ## 已知限制
 
 - **多音轨视频不做音量归一化**：见上文 AMPLIFY 跳过规则
+- **8K 源最多下 4K**：`MAX_DL_H=2160` 限制了下载高度。确实想下 8K 请把它改大，同时把 `TRANSCODE_ON` 关掉或把 `MAX_H` 提到 2160
+- **空回车不会退出**：只有 `q` / `quit` / `exit` 退出循环
 - **播放列表不下**：`--no-playlist`，只下 URL 指向的单个视频。想下整个播放列表请手动去掉这个参数
 - **>1080P 源必然重编码**：无法"零损失"降到 1080P；想要零损失请把 `MAX_H` 改成 2160 或 `TRANSCODE_ON=0`（然后接受 4K 文件）
 - **封面格式限 JPG**：MP4 容器的 attached_pic 只吃 mjpeg，yt-dlp 用 `--convert-thumbnails jpg` 自动转换
@@ -346,8 +366,8 @@ libx265 兜底速度大约是 QSV 的 1/5–1/10，但结果画质一致。
 ## 目录结构
 
 ```
-yt-dlp-download/
-├── yt-dlp-download.bat     单文件脚本，所有逻辑都在这里
+ytdlp-download-vedio/
+├── download_vedio.bat      单文件脚本，所有逻辑都在这里
 └── README.md               本文档
 ```
 
