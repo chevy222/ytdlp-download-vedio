@@ -30,7 +30,7 @@
 | 字幕 | 不下载、不嵌入（`--no-write-subs --no-write-auto-subs --no-embed-subs`） |
 | 音轨 | `-S "vcodec:h264,lang,..."` 中的 `lang` 字段让**原声音轨**在多音轨视频里胜出配音轨 |
 | 音量 | 下载完成后峰值归一到 0 dBFS，保证不削波（见[音量放大原理](#音量放大原理amplify)） |
-| 代理 | 仅 `youtube.com` / `youtu.be` / `aaaornhub.com` 走 `socks5://127.0.0.1:10808`，其它直连 |
+| 代理 | 仅 `youtube.com` / `youtu.be` / `pornhub.com` 走 `socks5://127.0.0.1:10808`，其它直连 |
 | Cookie | 按 URL 真实 HOST 自动匹配（如 `m.bilibili.com_cookies.txt`），带站点级回退到 `www.<site>.com_cookies.txt` |
 | 合集 | `--no-playlist`，只下你点开的那一个视频 |
 | 并发 | `-N 4`（`--concurrent-fragments 4`），DASH/HLS 分片并行下载，B 站与 YouTube 提速 2–4 倍 |
@@ -105,13 +105,13 @@ Cookie 文件放到 `%COOKIE_DIR%`（默认 `D:\Software\yt-dlp\`），命名规
 ```
 www.bilibili.com_cookies.txt     B 站必需，否则 HTTP 412
 www.youtube.com_cookies.txt      可选，YouTube 要求登录时才需要
-www.aaaornhub.com_cookies.txt      可选
+www.pornhub.com_cookies.txt      可选
 m.bilibili.com_cookies.txt       移动端分享链会自动匹配这个（如果放了）
 ```
 
 匹配顺序：
 1. 从 URL 提取真实 HOST（如 `www.bilibili.com`），找 `<HOST>_cookies.txt`
-2. 找不到则回落到 `www.<SITE>.com_cookies.txt`（SITE = youtube / bilibili / aaaornhub / other）
+2. 找不到则回落到 `www.<SITE>.com_cookies.txt`（SITE = youtube / bilibili / pornhub / other）
 3. 都找不到就匿名下载
 
 ### 3. 双击运行
@@ -246,7 +246,7 @@ URL 检测用子串比较（`if not "%URL:youtube.com=%"=="%URL%"`），不启�
 | 站点关键字 | SITE 标签 | 代理 | Cookie 回落 |
 |---|---|---|---|
 | `youtube.com` / `youtu.be` | youtube | SOCKS5 10808 | `www.youtube.com_cookies.txt` |
-| `aaaornhub.com` | SOCKS5 10808 | `www.aaaornhub.com_cookies.txt` |
+| `pornhub.com` | SOCKS5 10808 | `www.pornhub.com_cookies.txt` |
 | `bilibili.com` / `b23.tv` | bilibili | 直连 | `www.bilibili.com_cookies.txt` |
 | 其它 | other | 直连 | 无 |
 

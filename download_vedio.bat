@@ -28,7 +28,7 @@ rem    - Thumbnail embedded (converted to JPG first), metadata embedded
 rem    - No subtitles written or embedded
 rem    - After download: ONE rebuild pass does peak-normalize (to 0 dBFS) and
 rem      >MAX_H downscale together, so the file is rewritten at most once
-rem    - SOCKS5 proxy 127.0.0.1:10808 for YouTube and Aaaornhub only
+rem    - SOCKS5 proxy 127.0.0.1:10808 for YouTube and Pornhub only
 rem    - Bilibili direct, b23.tv short link recognized
 rem    - Cookie file auto-matched by URL host, then by site name
 rem    - Single video only (--no-playlist), no overwrite
@@ -51,7 +51,7 @@ rem Output directory (Desktop root). Falls back to OneDrive\Desktop if the
 rem local profile Desktop does not exist.
 set "OUT_DIR=%USERPROFILE%\Desktop"
 
-rem SOCKS5 proxy for YouTube / Aaaornhub only
+rem SOCKS5 proxy for YouTube / Pornhub only
 set "PROXY_URL=socks5://127.0.0.1:10808"
 
 rem Cookie directory. Files are named <HOST>_cookies.txt
@@ -235,11 +235,11 @@ set "SITE=other"
 set "PROXY_OPT="
 if not "%URL:youtube.com=%"=="%URL%" set "SITE=youtube"
 if not "%URL:youtu.be=%"=="%URL%" set "SITE=youtube"
-if not "%URL:aaaornhub.com=%"=="%URL%" set "SITE=aaaornhub"
+if not "%URL:pornhub.com=%"=="%URL%" set "SITE=pornhub"
 if not "%URL:bilibili.com=%"=="%URL%" set "SITE=bilibili"
 if not "%URL:b23.tv=%"=="%URL%" set "SITE=bilibili"
 if "%SITE%"=="youtube" set "PROXY_OPT=--proxy %PROXY_URL%"
-if "%SITE%"=="aaaornhub" set "PROXY_OPT=--proxy %PROXY_URL%"
+if "%SITE%"=="pornhub" set "PROXY_OPT=--proxy %PROXY_URL%"
 
 rem ---------- extract host from URL, match cookie ----------
 set "TMPHOST=%URL:*//=%"
