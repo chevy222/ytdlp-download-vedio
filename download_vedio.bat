@@ -45,7 +45,7 @@ set "FFMPEG_DIR=D:\Software\ffmpeg\bin"
 
 rem Node.js directory. YouTube needs a JS runtime now; yt-dlp only enables
 rem deno by default. Node is used here because it is already installed.
-set "NODE_DIR=D:\Software\node-v26.7.0-win-x64"
+set "NODE_DIR=D:\Software\node-v26.4.0-win-x64"
 
 rem Output directory (Desktop root). Falls back to OneDrive\Desktop if the
 rem local profile Desktop does not exist.
