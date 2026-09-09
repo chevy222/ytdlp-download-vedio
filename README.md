@@ -34,7 +34,7 @@
 | Cookie | 按 URL 真实 HOST 自动匹配（如 `m.bilibili.com_cookies.txt`），带站点级回退到 `www.<site>.com_cookies.txt` |
 | 合集 | `--no-playlist`，只下你点开的那一个视频 |
 | 并发 | `-N 4`（`--concurrent-fragments 4`），DASH/HLS 分片并行下载，B 站与 YouTube 提速 2–4 倍 |
-| 输入方式 | 双击后粘贴 / 把链接拖到 .bat 图标上 / 作为 `%1` 参数传入（后两种单次运行不进循环） |
+| 输入方式 | 双击后粘贴 / 把链接拖到 .bat 图标上 / 作为 `%1` 参数传入（后两种单次运行不进循环，失败时会暂停显示原因） |
 | 列格式 | URL 前加 `f ` 只列出可用画质不下载，排查利器 |
 | 退出 | 循环模式下输入 `q` / `quit` / `exit` |
 | 文件名 | `%(title).180B.%(ext)s`；多 P 视频标题自带 `p01`/`p02` 序号（yt-dlp 提取器行为），天然防重名 |
@@ -133,8 +133,9 @@ Enter URL: https://www.bilibili.com/video/BV1xx411c7mD
   Mode     : download
 
 [yt-dlp 输出...]
-  Transcode: source height 1080p           <-- ≤1080P，跳过转码
-  Volume   : peak -9.5 dB, amplified 9.5 dB to full scale (audio 128k, video untouched)
+  File     : "C:\Users\you\Desktop\Some Title.mp4"
+  Rebuild  : video copy / +9.5dB @ 128k    <-- ≤1080P：视频流零重编，只放大音量
+  Rebuild  : done
 
   Done. Files are in: C:\Users\you\Desktop
 ```
@@ -145,17 +146,16 @@ Enter URL: https://www.bilibili.com/video/BV1xx411c7mD
 
 ### 格式选择串（`FORMAT`）
 
-六级回落，从"最优直拷"到"下载后转码"：
+七级回落，从"最优直拷"到"兜底"，能不重编码就不重编码：
 
 ```
 bv*[height<=1080][vcodec*=avc]+ba[acodec*=mp4a]   1. H.264 + AAC，纯 stream copy 到 MP4，零重编码
 bv*[height<=1080][vcodec*=avc]+ba                 2. H.264 + 任意音频（音频会被 yt-dlp 转成 AAC 合入 MP4）
 bv*[height<=1080]+ba                              3. 任意编码 ≤1080P + 最佳音频
-b[height<=1080]                                   4. 单文件 ≤1080P（无分离音视频流的老视频）
-bv*[height<=2160]+ba                              5. 任意编码 <=2160 + 最佳音频（触发重建，MAX_DL_H 挡住 8K）
-b[height<=1080]                                   6. 单文件 <=1080P（无分离音视频流的老视频）
-bv*+ba                                            7. 任意分辨率最佳音视频
-b                                                 8. 单文件兜底
+b[height<=1080]                                   4. 单文件 ≤1080P（无分离音视频流的老视频；也优先于第 5 级——有原生 1080P 就不下载 4K 再转回来）
+bv*[height<=2160]+ba                              5. 任意编码 ≤2160 + 最佳音频（触发重建，MAX_DL_H 挡住 8K）
+bv*+ba                                            6. 任意分辨率最佳音视频
+b                                                 7. 单文件兜底
 ```
 
 ### 排序策略（`SORT`）
@@ -176,8 +176,8 @@ vcodec:h264, lang, quality, res, fps, acodec:aac, size, proto, ext
 
 流程：
 
-1. `PROBE_HEIGHT`：ffprobe 读高度，**先做纯数字校验**（`N/A` 之类的非数字会被跳过，否则字符串比较会误判成"需要转码"）。
-2. `PROBE_AUDIO`：音轨数 → `volumedetect` 峰值 → 增益（上限 `MAXGAIN` dB）→ 音频码率。
+1. `PROBE_HEIGHT`：ffprobe **一次**读取 v:0 的编码与高度——编码用于识别封面流（mjpeg/png/bmp/gif 若在 v:0，真实视频在 v:1，转码作用到 v:1），高度做纯数字校验（`N/A` 之类的非数字会被跳过）。
+2. `PROBE_AUDIO`：ffprobe **一次**拿到音轨数与 a:0 码率 → `volumedetect` 峰值 → 增益（上限 `MAXGAIN` dB）。
 3. 两个都不需要改动时**直接跳过**，完全不重写文件。
 4. 需要改动才调用 `REBUILD`，一条命令完成：
 
@@ -190,7 +190,7 @@ ffmpeg -y -i src.mp4 ^
 ```
 
 - `-map 0 -c copy` 拿到全部流（主视频 / 音频 / mjpeg 封面 / 章节）
-- 只有 `v:0` 和音频流被重编码，封面原样保留、`attached_pic` 标记不丢
+- 只有主视频流和音频流被重编码（封面流在 v:0 时自动改作用到 v:1），封面原样保留、`attached_pic` 标记不丢
 - **用 `ERRORLEVEL` 而不是 `if not exist` 判断成败**：编码到一半失败时 ffmpeg 会留下残缺文件，只判断"文件存在"会把它 `move` 去覆盖原始下载
 - QSV 失败自动回落到 `libx265`（preset 由 `X265_PRESET` 控制）
 - 替换前还会校验产物大小（< 1 KB 视为失败，保留原文件）
@@ -241,7 +241,7 @@ ffmpeg -y -i src.mp4 ^
 
 ## 站点分流
 
-URL 检测靠 `findstr` 匹配关键字，命中即分流：
+URL 检测用子串比较（`if not "%URL:youtube.com=%"=="%URL%"`），不启动子进程，URL 里的 `^`、`%` 也不会被管道破坏，命中即分流：
 
 | 站点关键字 | SITE 标签 | 代理 | Cookie 回落 |
 |---|---|---|---|

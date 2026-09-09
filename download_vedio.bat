@@ -105,11 +105,14 @@ rem yt-dlp writes the final file path here. The output name comes from the
 rem video title, so this file is the only way for the post-processing step to
 rem learn what was actually written.
 set "LASTFILE=%TEMP%\ytdlp_last_%RND%.txt"
-set "V0FILE=%TEMP%\ytdlp_v0_%RND%.txt"
+rem video probe: "codec_name,height" of stream v:0 - feeds both the height
+rem check below and REBUILD's cover-art detection (MAINV)
 set "HFILE=%TEMP%\ytdlp_h_%RND%.txt"
-set "VOLFILE=%TEMP%\ytdlp_vol_%RND%.txt"
-set "ABRFILE=%TEMP%\ytdlp_abr_%RND%.txt"
+rem audio probe: one bit_rate line per audio track - line count = track
+rem count, first line = a:0 bitrate
 set "CNTFILE=%TEMP%\ytdlp_cnt_%RND%.txt"
+rem volumedetect peak output
+set "VOLFILE=%TEMP%\ytdlp_vol_%RND%.txt"
 
 
 rem ---------- locate yt-dlp ----------
@@ -171,12 +174,13 @@ rem Chain:
 rem   1. H.264 <=MAX_H + AAC          (best case: pure stream copy into MP4)
 rem   2. H.264 <=MAX_H + best audio   (audio will be transcoded to AAC on merge)
 rem   3. any codec <=MAX_H + best audio
-rem   4. any codec <=MAX_DL_H + best audio   (triggers the rebuild step, and
+rem   4. single file <=MAX_H          (a native <=MAX_H file beats downloading
+rem      a >MAX_H stream just to re-encode it back down)
+rem   5. any codec <=MAX_DL_H + best audio   (triggers the rebuild step, and
 rem      MAX_DL_H keeps an 8K-only video from downloading tens of GB)
-rem   5. single file <=MAX_H
 rem   6. best video + best audio, any resolution
 rem   7. best single file, any resolution
-set "FORMAT=bv*[height<=%MAX_H%][vcodec*=avc]+ba[acodec*=mp4a]/bv*[height<=%MAX_H%][vcodec*=avc]+ba/bv*[height<=%MAX_H%]+ba/bv*[height<=%MAX_DL_H%]+ba/b[height<=%MAX_H%]/bv*+ba/b"
+set "FORMAT=bv*[height<=%MAX_H%][vcodec*=avc]+ba[acodec*=mp4a]/bv*[height<=%MAX_H%][vcodec*=avc]+ba/bv*[height<=%MAX_H%]+ba/b[height<=%MAX_H%]/bv*[height<=%MAX_DL_H%]+ba/bv*+ba/b"
 
 rem Sort: H.264 first, then `lang` so the original audio track beats dubbed
 rem ones, then quality / resolution / fps; AAC preferred for MP4 compat.
@@ -207,7 +211,7 @@ if not defined URL goto LOOP
 
 :GOT_URL
 rem drop the file path recorded by the previous round
-if exist "%LASTFILE%" del "%LASTFILE%" >nul 2>&1
+del "%LASTFILE%" >nul 2>&1
 
 rem strip quotes
 set "URL=%URL:"=%"
@@ -222,9 +226,7 @@ if /i "%URL:~0,2%"=="f " (
 rem strip all spaces (also trims leading / trailing)
 set "URL=%URL: =%"
 if not defined URL goto LOOP
-if /i "%URL%"=="q" goto END
-if /i "%URL%"=="quit" goto END
-if /i "%URL%"=="exit" goto END
+for %%q in (q quit exit) do if /i "%URL%"=="%%q" goto END
 
 rem ---------- detect site ----------
 rem substring comparison instead of `echo | findstr`: no child processes, and
@@ -290,6 +292,7 @@ if not "%ERRORLEVEL%"=="0" (
     echo   3. Format not available: run  f URL  to list real formats
     echo   4. Cookie expired: export cookies.txt again
     echo.
+    if not "%~1"=="" pause
     goto NEXT_ROUND
 )
 
@@ -299,7 +302,7 @@ if not exist "%LASTFILE%" goto AFTER_POST
 set /p "OUTFILE=" < "%LASTFILE%"
 if not defined OUTFILE goto AFTER_POST
 if not exist "%OUTFILE%" goto AFTER_POST
-echo   File     : %OUTFILE%
+echo   File     : "%OUTFILE%"
 
 set "NEEDV=0"
 set "NEEDA=0"
@@ -321,13 +324,16 @@ if not "%~1"=="" goto END
 goto LOOP
 
 :END
-del "%LASTFILE%" "%V0FILE%" "%HFILE%" "%VOLFILE%" "%ABRFILE%" "%CNTFILE%" 2>nul
+del "%LASTFILE%" "%HFILE%" "%VOLFILE%" "%CNTFILE%" 2>nul
 if "%~1"=="" pause
 exit /b 0
 
 
 rem ==========================================================================
-rem  PROBE_HEIGHT - set NEEDV=1 when the file is taller than MAX_H
+rem  PROBE_HEIGHT - set NEEDV=1 when the file is taller than MAX_H.
+rem  Also sets MAINV: cover art (mjpeg/png/bmp/gif) can sit at v:0 depending
+rem  on the muxer / yt-dlp version; then the real video stream is v:1 and
+rem  REBUILD must feed THAT one through the scale filter, never the cover.
 rem ==========================================================================
 :PROBE_HEIGHT
 if not defined FFPROBE_EXE exit /b 0
@@ -335,12 +341,22 @@ set "SRC=%~1"
 if not defined SRC exit /b 0
 if not exist "%SRC%" exit /b 0
 
-if exist "%HFILE%" del "%HFILE%" >nul 2>&1
-"%FFPROBE_EXE%" -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "%SRC%" > "%HFILE%" 2>nul
+rem one probe feeds both the height check and the MAINV detection
+"%FFPROBE_EXE%" -v error -select_streams v:0 -show_entries stream=codec_name,height -of csv=p=0 "%SRC%" > "%HFILE%" 2>nul
+set "V0C="
 set "HEIGHT="
-set /p HEIGHT=<"%HFILE%"
+for /f "usebackq tokens=1,2 delims=," %%c in ("%HFILE%") do if not defined HEIGHT (
+    set "V0C=%%c"
+    set "HEIGHT=%%d"
+)
+
+rem cover art at v:0 means the real video stream is v:1
+set "MAINV=0"
+if /i "%V0C%"=="mjpeg" set "MAINV=1"
+if /i "%V0C%"=="png"   set "MAINV=1"
+if /i "%V0C%"=="bmp"   set "MAINV=1"
+if /i "%V0C%"=="gif"   set "MAINV=1"
 if not defined HEIGHT exit /b 0
-for /f "tokens=1 delims= " %%h in ("%HEIGHT%") do set "HEIGHT=%%h"
 
 rem ffprobe can return N/A; comparing that as a number would be a string
 rem compare and would wrongly decide "needs transcode"
@@ -378,10 +394,15 @@ if not exist "%SRC%" exit /b 0
 
 set "MAXVOL="
 
-rem single audio track only: volumedetect measures one track, see header
-"%FFPROBE_EXE%" -v error -select_streams a -show_entries stream=index -of csv=p=0 "%SRC%" > "%CNTFILE%" 2>nul
+rem one probe for track count AND a:0 bitrate: one bit_rate line per audio
+rem track, first line = a:0 (multi-track files are skipped below anyway)
+"%FFPROBE_EXE%" -v error -select_streams a -show_entries stream=bit_rate -of csv=p=0 "%SRC%" > "%CNTFILE%" 2>nul
 set "ACNT=0"
-for /f "usebackq delims=" %%s in ("%CNTFILE%") do set /a ACNT+=1
+set "ABR="
+for /f "usebackq delims=" %%s in ("%CNTFILE%") do (
+    set /a ACNT+=1
+    if not defined ABR set "ABR=%%s"
+)
 if %ACNT% GTR 1 (
     echo   Volume   : %ACNT% audio tracks, skipped
     exit /b 0
@@ -418,10 +439,7 @@ if %GI% GTR %MAXGAIN% (
     echo   Volume   : peak %MAXVOL% dB needs more than %MAXGAIN% dB, gain capped
 )
 
-rem audio bitrate follows the source, clamped to 64-192k
-set "ABR="
-"%FFPROBE_EXE%" -v error -select_streams a:0 -show_entries stream=bit_rate -of csv=p=0 "%SRC%" > "%ABRFILE%" 2>nul
-set /p ABR=<"%ABRFILE%"
+rem audio bitrate follows the source (captured above), clamped to 64-192k
 if not defined ABR set "ABR=128000"
 if "%ABR%"=="N/A" set "ABR=128000"
 set /a ABK=%ABR% / 1000
@@ -436,29 +454,19 @@ exit /b 0
 rem ==========================================================================
 rem  REBUILD - one ffmpeg pass doing scale and/or amplify together.
 rem    -map 0 keeps every stream (audio, cover art, chapters); -c copy is the
-rem    default and only v:0 / the audio stream get re-encoded, so the mjpeg
-rem    cover art survives untouched.
+rem    default and only the main video stream / the audio get re-encoded, so
+rem    the mjpeg cover art survives untouched.
+rem    MAINV comes from PROBE_HEIGHT (0 normally, 1 when cover art sits at
+rem    v:0). REBUILD is only reached when NEEDV=1 or NEEDA=1; the NEEDV=1
+rem    path implies PROBE_HEIGHT ran on this same file.
 rem  ERRORLEVEL is only read OUTSIDE parentheses, and compared as text: ffmpeg
-rem  can exit with a large negative code, which `if errorlevel 1` misses.
+rem    can exit with a large negative code, which `if errorlevel 1` misses.
 rem ==========================================================================
 :REBUILD
 if not defined FFMPEG_EXE exit /b 0
 set "SRC=%~1"
 if not defined SRC exit /b 0
 if not exist "%SRC%" exit /b 0
-
-rem --- locate the real video stream. Cover art can sit at v:0 depending on the
-rem muxer / yt-dlp version, and it must never be fed through the scale filter ---
-set "MAINV=0"
-set "V0C="
-if defined FFPROBE_EXE (
-    "%FFPROBE_EXE%" -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "%SRC%" > "%V0FILE%" 2>nul
-    set /p V0C=<"%V0FILE%"
-)
-if /i "%V0C%"=="mjpeg" set "MAINV=1"
-if /i "%V0C%"=="png"   set "MAINV=1"
-if /i "%V0C%"=="bmp"   set "MAINV=1"
-if /i "%V0C%"=="gif"   set "MAINV=1"
 
 rem Scaling path decodes on the GPU. -hwaccel qsv feeds QSV frames straight
 rem into the filter graph, so hwdownload is mandatory before the CPU scale.
@@ -472,7 +480,7 @@ set "AOPT=-c:a copy"
 if "%NEEDA%"=="1" set "AOPT=-af volume=%GAIN%dB -c:a aac -b:a %ABK%k"
 
 set "TMPOUT=%SRC%.rebuild.mp4"
-if exist "%TMPOUT%" del "%TMPOUT%" >nul 2>&1
+del "%TMPOUT%" >nul 2>&1
 
 echo   Rebuild  : %VTXT% / %ATXT%
 "%FFMPEG_EXE%" -y -hide_banner -loglevel error -stats -nostdin ^
@@ -486,7 +494,7 @@ rem QSV missing or broken -> software encode (only relevant when scaling).
 rem No -hwaccel on this path: if QSV is the problem, plain CPU is what works.
 if "%NEEDV%"=="0" goto REBUILD_FAILED
 echo   Rebuild  : QSV failed, falling back to libx265 ^(software^)...
-if exist "%TMPOUT%" del "%TMPOUT%" >nul 2>&1
+del "%TMPOUT%" >nul 2>&1
 "%FFMPEG_EXE%" -y -hide_banner -loglevel error -stats -nostdin ^
     -i "%SRC%" ^
     -map 0 -c copy ^
@@ -502,13 +510,13 @@ set "TSIZE=0"
 if exist "%TMPOUT%" for %%A in ("%TMPOUT%") do set "TSIZE=%%~zA"
 if %TSIZE% LSS 1024 (
     echo   Rebuild  : output is only %TSIZE% bytes, original kept
-    if exist "%TMPOUT%" del "%TMPOUT%" >nul 2>&1
+    del "%TMPOUT%" >nul 2>&1
     exit /b 0
 )
 move /y "%TMPOUT%" "%SRC%" >nul
 if not "%ERRORLEVEL%"=="0" (
     echo   Rebuild  : could not replace the original, file in use?
-    echo   Rebuilt copy kept as: %TMPOUT%
+    echo   Rebuilt copy kept as: "%TMPOUT%"
     exit /b 0
 )
 echo   Rebuild  : done
@@ -516,5 +524,5 @@ exit /b 0
 
 :REBUILD_FAILED
 echo   Rebuild  : failed, original kept as-is
-if exist "%TMPOUT%" del "%TMPOUT%" >nul 2>&1
+del "%TMPOUT%" >nul 2>&1
 exit /b 0
