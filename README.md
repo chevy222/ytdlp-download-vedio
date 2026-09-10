@@ -6,51 +6,51 @@
 
 ---
 
-## 与上游参考脚本的核心差异
+## 与旧脚本的核心差异
 
-| 维度 | 参考脚本 (ytdlp-download-vedio) | 本脚本 |
-|---|---|---|
-| >1080P 源 | 格式串硬过滤 `height<=1080`，4K-only 视频**下不到** | 允许回落 `bv*+ba`，抓到 4K 后自动 **Intel QSV HEVC 硬件转码**到 1080P；QSV 不可用时回落 `libx265` 软件编码 |
-| 视频重编码 | 永远 `-c:v copy`（画质零损失，但拿不到 4K 内容） | ≤1080P 源仍是 `-c:v copy`；>1080P 源才触发重编码 |
-| 封面在转码后 | N/A（不转码） | `-map 0 -c copy -c:v:0 hevc_qsv -filter:v:0 scale=<短边定向：竖屏 1080:-2 / 横屏 -2:1080>`，只重编主视频流，mjpeg 封面流原样保留、`attached_pic=1` 标记不丢 |
-| 其它所有特性 | — | 与参考脚本一致 |
+| 维度       | 旧版本                                     | 新脚本                                                                                                                           |
+| -------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| >1080P 源 | 格式串硬过滤 `height<=1080`，4K-only 视频**下不到** | 允许回落 `bv*+ba`，抓到 4K 后自动 **Intel QSV HEVC 硬件转码**到 1080P；QSV 不可用时回落 `libx265` 软件编码                                              |
+| 视频重编码    | 永远 `-c:v copy`（画质零损失，但拿不到 4K 内容）        | ≤1080P 源仍是 `-c:v copy`；>1080P 源才触发重编码                                                                                         |
+| 封面在转码后   | N/A（不转码）                                | `-map 0 -c copy -c:v:0 hevc_qsv -filter:v:0 scale=<短边定向：竖屏 1080:-2 / 横屏 -2:1080>`，只重编主视频流，mjpeg 封面流原样保留、`attached_pic=1` 标记不丢 |
+| 其它所有特性   | —                                       | 与参考脚本一致                                                                                                                       |
 
 ---
 
 ## 功能一览
 
-| 项目 | 行为 |
-|---|---|
-| 画质 | 最高 1080P（按**短边**计：竖屏 Shorts 的 1080x1920 就是 1080P），H.264+AAC 优先直拷；超过则自动 QSV HEVC 硬件转码到 1080P |
-| 容器 | 统一 MP4（`--merge-output-format mp4 --remux-video mp4`） |
-| 封面 | 缩略图转 JPG 后作为 attached_pic 嵌入（`--embed-thumbnail --convert-thumbnails jpg`），转码链路中通过 `-map 0` 保留 |
-| 元数据 | 标题、UP 主、来源链接、语言标签写入文件（`--embed-metadata`） |
-| 字幕 | 不下载、不嵌入（`--no-write-subs --no-write-auto-subs --no-embed-subs`） |
-| 音轨 | `-S "vcodec:h264,lang,..."` 中的 `lang` 字段让**原声音轨**在多音轨视频里胜出配音轨 |
-| 音量 | 下载完成后峰值归一到 0 dBFS，保证不削波（见[音量放大原理](#音量放大原理amplify)） |
-| 代理 | 仅 `youtube.com` / `youtu.be` / `pornhub.com` 走 `socks5://127.0.0.1:10808`，其它直连 |
-| Cookie | 按 URL 真实 HOST 自动匹配（如 `m.bilibili.com_cookies.txt`），带站点级回退到 `www.<site>.com_cookies.txt` |
-| 合集 | `--no-playlist`，只下你点开的那一个视频 |
-| 并发 | `-N 4`（`--concurrent-fragments 4`），DASH/HLS 分片并行下载，B 站与 YouTube 提速 2–4 倍 |
-| 输入方式 | 双击后粘贴 / 把链接拖到 .bat 图标上 / 作为 `%1` 参数传入（后两种单次运行不进循环，失败时会暂停显示原因） |
-| 列格式 | URL 前加 `f ` 只列出可用画质不下载，排查利器 |
-| 退出 | 循环模式下输入 `q` / `quit` / `exit` |
-| 文件名 | `%(title).180B.%(ext)s`；多 P 视频标题自带 `p01`/`p02` 序号（yt-dlp 提取器行为），天然防重名 |
-| 同名文件 | `--no-overwrites`，重复下载会跳过；想重下请先删旧文件 |
-| 脚本编码 | **纯 ASCII，无 BOM，无 chcp**，任何 Windows 代码页下都不会乱码 |
+| 项目     | 行为                                                                                             |
+| ------ | ---------------------------------------------------------------------------------------------- |
+| 画质     | 最高 1080P（按**短边**计：竖屏 Shorts 的 1080x1920 就是 1080P），H.264+AAC 优先直拷；超过则自动 QSV HEVC 硬件转码到 1080P    |
+| 容器     | 统一 MP4（`--merge-output-format mp4 --remux-video mp4`）                                          |
+| 封面     | 缩略图转 JPG 后作为 attached_pic 嵌入（`--embed-thumbnail --convert-thumbnails jpg`），转码链路中通过 `-map 0` 保留 |
+| 元数据    | 标题、UP 主、来源链接、语言标签写入文件（`--embed-metadata`）                                                      |
+| 字幕     | 不下载、不嵌入（`--no-write-subs --no-write-auto-subs --no-embed-subs`）                                |
+| 音轨     | `-S "vcodec:h264,lang,..."` 中的 `lang` 字段让**原声音轨**在多音轨视频里胜出配音轨                                  |
+| 音量     | 下载完成后峰值归一到 0 dBFS，保证不削波（见[音量放大原理](#音量放大原理amplify)）                                             |
+| 代理     | 仅 `youtube.com` / `youtu.be` / `pornhub.com` 走 `socks5://127.0.0.1:10808`，其它直连                 |
+| Cookie | 按 URL 真实 HOST 自动匹配（如 `m.bilibili.com_cookies.txt`），带站点级回退到 `www.<site>.com_cookies.txt`        |
+| 合集     | `--no-playlist`，只下你点开的那一个视频                                                                    |
+| 并发     | `-N 4`（`--concurrent-fragments 4`），DASH/HLS 分片并行下载，B 站与 YouTube 提速 2–4 倍                       |
+| 输入方式   | 双击后粘贴 / 把链接拖到 .bat 图标上 / 作为 `%1` 参数传入（后两种单次运行不进循环，失败时会暂停显示原因）                                  |
+| 列格式    | URL 前加 `f ` 只列出可用画质不下载，排查利器                                                                    |
+| 退出     | 循环模式下输入 `q` / `quit` / `exit`                                                                  |
+| 文件名    | `%(title).180B.%(ext)s`；多 P 视频标题自带 `p01`/`p02` 序号（yt-dlp 提取器行为），天然防重名                          |
+| 同名文件   | `--no-overwrites`，重复下载会跳过；想重下请先删旧文件                                                            |
+| 脚本编码   | **纯 ASCII，无 BOM，无 chcp**，任何 Windows 代码页下都不会乱码                                                  |
 
 ---
 
 ## 环境要求
 
-| 工具 | 版本 / 说明 |
-|---|---|
-| Windows 10 / 11 | 用 `cmd.exe`，主流程**不需要 PowerShell** |
-| [yt-dlp.exe](https://github.com/yt-dlp/yt-dlp/releases) | 建议 2025.11 起（YouTube 开始强制要求 JS 运行时） |
-| ffmpeg + ffprobe | 放同一目录；用于音画合并、封面嵌入、转码与音量处理。ffmpeg 需带 **hevc_qsv** 编码器（Intel 核显）；无 QSV 会自动回落 libx265 |
-| node.exe（或 deno） | yt-dlp 默认只启用 deno，本脚本显式指向 node，YouTube 必需。Node ≥ 22.0（yt-dlp 官方最低要求） |
-| Cookie 文件 | Netscape 格式。**B 站必需**（无 cookie 请求会返回 HTTP 412），YouTube / Pornhub 视登录需求可选 |
-| Intel 核显（可选） | 有则 QSV HEVC 硬件转码，速度快、CPU 占用低；没有则用 libx265 软件编码，慢但结果一致 |
+| 工具                                                      | 版本 / 说明                                                                            |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Windows 10 / 11                                         | 用 `cmd.exe`，主流程**不需要 PowerShell**                                                  |
+| [yt-dlp.exe](https://github.com/yt-dlp/yt-dlp/releases) | 建议 2025.11 起（YouTube 开始强制要求 JS 运行时）                                                |
+| ffmpeg + ffprobe                                        | 放同一目录；用于音画合并、封面嵌入、转码与音量处理。ffmpeg 需带 **hevc_qsv** 编码器（Intel 核显）；无 QSV 会自动回落 libx265 |
+| node.exe（或 deno）                                        | yt-dlp 默认只启用 deno，本脚本显式指向 node，YouTube 必需。Node ≥ 22.0（yt-dlp 官方最低要求）               |
+| Cookie 文件                                               | Netscape 格式。**B 站必需**（无 cookie 请求会返回 HTTP 412），YouTube / Pornhub 视登录需求可选           |
+| Intel 核显（可选）                                            | 有则 QSV HEVC 硬件转码，速度快、CPU 占用低；没有则用 libx265 软件编码，慢但结果一致                              |
 
 ---
 
@@ -58,7 +58,7 @@
 
 ### 1. 修改 CONFIG 段指向你的路径
 
-打开 `download_vedio.bat`，顶部 CONFIG 区所有可调项集中在一起：
+打开 `download_video.bat`，顶部 CONFIG 区所有可调项集中在一起：
 
 ```bat
 set "YTDLP_DIR=D:\Software\yt-dlp"
@@ -78,23 +78,23 @@ set "X265_PRESET=fast"
 set "AUTO_UPDATE=0"
 ```
 
-| 变量 | 作用 | 建议 |
-|---|---|---|
-| `YTDLP_DIR` | yt-dlp.exe 所在目录 | 找不到会回落到 PATH |
-| `FFMPEG_DIR` | ffmpeg.exe / ffprobe.exe 所在目录 | 找不到会回落到 PATH |
-| `NODE_DIR` | node.exe 所在目录（YouTube 必需） | 找不到会回落 PATH 里的 node → deno |
-| `OUT_DIR` | 下载输出目录 | `%USERPROFILE%\Desktop` 不存在时自动回落 `%OneDrive%\Desktop` |
-| `PROXY_URL` | 代理地址（仅 YouTube / Pornhub 使用） | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://` |
-| `COOKIE_DIR` | Cookie 目录 | 默认与 yt-dlp 同目录 |
-| `MAX_H` | 最大画质上限（按**短边**计，竖屏 1080x1920 = 1080P），超过则触发 QSV HEVC 转码 | 1080；改 720 可省空间 |
-| `OUT_TPL` | 输出文件名模板 | 见[文件名模板备选](#文件名模板备选) |
-| `FRAGMENTS` | DASH/HLS 并发分片数 | 4；被限速时改成 1 |
-| `AMPLIFY_ON` | 音量归一化开关 | 1 开 / 0 关 |
-| `TRANSCODE_ON` | >MAX_H 转码开关 | 1 开 / 0 关（关掉后 4K 源将保留 4K） |
-| `MAX_DL_H` | **下载**高度的硬上限，防止 8K-only 源下几十 GB | 2160；见[格式链](#格式选择串format) |
-| `MAXGAIN` | 音频增益上限 dB | 24；防止近静音源被放大 50-90 dB 把底噪推到满刻度 |
-| `X265_PRESET` | libx265 兜底 preset | `fast`（比 `medium` 快约一倍，观感几乎无差） |
-| `AUTO_UPDATE` | 启动时跑一次 `yt-dlp -U` | 0 关 / 1 开 |
+| 变量             | 作用                                                      | 建议                                                    |
+| -------------- | ------------------------------------------------------- | ----------------------------------------------------- |
+| `YTDLP_DIR`    | yt-dlp.exe 所在目录                                         | 找不到会回落到 PATH                                          |
+| `FFMPEG_DIR`   | ffmpeg.exe / ffprobe.exe 所在目录                           | 找不到会回落到 PATH                                          |
+| `NODE_DIR`     | node.exe 所在目录（YouTube 必需）                               | 找不到会回落 PATH 里的 node → deno                            |
+| `OUT_DIR`      | 下载输出目录                                                  | `%USERPROFILE%\Desktop` 不存在时自动回落 `%OneDrive%\Desktop` |
+| `PROXY_URL`    | 代理地址（仅 YouTube / Pornhub 使用）                            | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://`        |
+| `COOKIE_DIR`   | Cookie 目录                                               | 默认与 yt-dlp 同目录                                        |
+| `MAX_H`        | 最大画质上限（按**短边**计，竖屏 1080x1920 = 1080P），超过则触发 QSV HEVC 转码 | 1080；改 720 可省空间                                       |
+| `OUT_TPL`      | 输出文件名模板                                                 | 见[文件名模板备选](#文件名模板备选)                                  |
+| `FRAGMENTS`    | DASH/HLS 并发分片数                                          | 4；被限速时改成 1                                            |
+| `AMPLIFY_ON`   | 音量归一化开关                                                 | 1 开 / 0 关                                             |
+| `TRANSCODE_ON` | >MAX_H 转码开关                                             | 1 开 / 0 关（关掉后 4K 源将保留 4K）                             |
+| `MAX_DL_H`     | **下载**高度的硬上限，防止 8K-only 源下几十 GB                         | 2160；见[格式链](#格式选择串format)                             |
+| `MAXGAIN`      | 音频增益上限 dB                                               | 24；防止近静音源被放大 50-90 dB 把底噪推到满刻度                        |
+| `X265_PRESET`  | libx265 兜底 preset                                       | `fast`（比 `medium` 快约一倍，观感几乎无差）                        |
+| `AUTO_UPDATE`  | 启动时跑一次 `yt-dlp -U`                                      | 0 关 / 1 开                                             |
 
 ### 2. 按域名放 Cookie
 
@@ -108,6 +108,7 @@ m.bilibili.com_cookies.txt       移动端分享链会自动匹配这个（如�
 ```
 
 匹配顺序：
+
 1. 从 URL 提取真实 HOST（如 `www.bilibili.com`），找 `<HOST>_cookies.txt`
 2. 找不到则回落到 `www.<SITE>.com_cookies.txt`（SITE = youtube / bilibili / pornhub / other）
 3. 都找不到就匿名下载
@@ -245,12 +246,12 @@ ffmpeg -y -i src.mp4 ^
 
 URL 检测用子串比较（`if not "%URL:youtube.com=%"=="%URL%"`），不启动子进程，URL 里的 `^`、`%` 也不会被管道破坏，命中即分流：
 
-| 站点关键字 | SITE 标签 | 代理 | Cookie 回落 |
-|---|---|---|---|
-| `youtube.com` / `youtu.be` | youtube | SOCKS5 10808 | `www.youtube.com_cookies.txt` |
-| `pornhub.com` | SOCKS5 10808 | `www.pornhub.com_cookies.txt` |
-| `bilibili.com` / `b23.tv` | bilibili | 直连 | `www.bilibili.com_cookies.txt` |
-| 其它 | other | 直连 | 无 |
+| 站点关键字                      | SITE 标签      | 代理                            | Cookie 回落                      |
+| -------------------------- | ------------ | ----------------------------- | ------------------------------ |
+| `youtube.com` / `youtu.be` | youtube      | SOCKS5 10808                  | `www.youtube.com_cookies.txt`  |
+| `pornhub.com`              | SOCKS5 10808 | `www.pornhub.com_cookies.txt` |                                |
+| `bilibili.com` / `b23.tv`  | bilibili     | 直连                            | `www.bilibili.com_cookies.txt` |
+| 其它                         | other        | 直连                            | 无                              |
 
 Cookie 匹配优先看 URL 的真实 HOST，站点级回退只是兜底。
 
@@ -275,7 +276,7 @@ Enter URL: q     <-- 退出
 **c) 命令行传参**
 
 ```cmd
-download_vedio.bat https://www.bilibili.com/video/BV1xx411c7mD
+download_video.bat https://www.bilibili.com/video/BV1xx411c7mD
 ```
 
 ### 只列可用画质（`f ` 前缀）
@@ -315,6 +316,7 @@ set "OUT_TPL=%%(title).180B [%%(id)s].%%(ext)s"                  <-- 加 BV/视�
 ### YouTube 403 / "Sign in to confirm you're not a bot"
 
 按顺序排查：
+
 1. `Node :` 一行是否有值（没有就是 Node.js 没找到）
 2. 代理是否开启，`socks5://127.0.0.1:10808` 端口是否真是 SOCKS5
 3. 导出 `www.youtube.com_cookies.txt`（登录状态下的 cookie）
@@ -333,6 +335,7 @@ set "OUT_TPL=%%(title).180B [%%(id)s].%%(ext)s"                  <-- 加 BV/视�
 ### QSV 转码失败
 
 如果看到 `Transcode: QSV failed, falling back to libx265 (software)...`：
+
 - 机器没有 Intel 核显（AMD/纯 CPU） → 正常，libx265 兜底
 - Intel 核显驱动过旧 → 升级到最新 Intel Graphics Driver
 - ffmpeg 是不带 QSV 的构建 → 换官方 gyan.dev 或 BtbN 的完整构建
@@ -368,8 +371,8 @@ libx265 兜底速度大约是 QSV 的 1/5–1/10，但结果画质一致。
 ## 目录结构
 
 ```
-ytdlp-download-vedio/
-├── download_vedio.bat      单文件脚本，所有逻辑都在这里
+ytdlp-download-video/
+├── download_video.bat      单文件脚本，所有逻辑都在这里
 └── README.md               本文档
 ```
 
