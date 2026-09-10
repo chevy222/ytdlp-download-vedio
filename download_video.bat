@@ -333,7 +333,15 @@ if not "%ERRORLEVEL%"=="0" (
     echo   3. Format not available: run  f URL  to list real formats
     echo   4. Cookie expired: export cookies.txt again
     echo   5. X/Twitter "Login required": x.com needs a logged-in cookie
-    echo      (x.com_cookies.txt or twitter.com_cookies.txt) plus the proxy
+    rem Trap: the parens in the NEXT line are caret-escaped on purpose, and the
+    rem comment itself is written without a bare paren character for the same
+    rem reason: a bare closing-paren inside an if block ends the block right
+    rem there, the following word on that line is then parsed as a command, and
+    rem cmd aborts the whole batch with "... was unexpected at this time." - the
+    rem word it named here was "plus". Every run died right after yt-dlp exited
+    rem because of this, so REBUILD / AMPLIFY never got a chance to run.
+    rem Do NOT strip the carets from the next line.
+    echo      ^(x.com_cookies.txt or twitter.com_cookies.txt^) plus the proxy
     echo.
     if not "%~1"=="" pause
     goto NEXT_ROUND
