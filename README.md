@@ -4,8 +4,6 @@
 
 > **一句话简介：** 一个双击即用的 Windows 视频下载器：yt-dlp 抓 1080P mp4、自动嵌封面与元数据、按站点分流代理与 Cookie，源超过 1080P 时用 Intel QSV HEVC 硬件转码缩到 1080P（封面与音轨原样保留），下载完成后音频峰值自动归一到 0 dBFS 且不削波。
 
-本仓库基于 [chevy222/ytdlp-download-vedio](https://github.com/chevy222/ytdlp-download-vedio) 演进，在保留其所有优点（纯 ASCII、Node JS 运行时、SOCKS5 分流、`lang` 排序、AMPLIFY 音量归一化、HOST 匹配 Cookie、循环模式、`f URL` 列格式、拖拽支持）的基础上，新增**超分辨率智能转码链路**。
-
 ---
 
 ## 与上游参考脚本的核心差异
@@ -50,8 +48,8 @@
 | Windows 10 / 11 | 用 `cmd.exe`，主流程**不需要 PowerShell** |
 | [yt-dlp.exe](https://github.com/yt-dlp/yt-dlp/releases) | 建议 2025.11 起（YouTube 开始强制要求 JS 运行时） |
 | ffmpeg + ffprobe | 放同一目录；用于音画合并、封面嵌入、转码与音量处理。ffmpeg 需带 **hevc_qsv** 编码器（Intel 核显）；无 QSV 会自动回落 libx265 |
-| node.exe（或 deno） | yt-dlp 默认只启用 deno，本脚本显式指向 node，YouTube 必需。Node ≥ 20.0 |
-| Cookie 文件 | Netscape 格式。**B 站必需**（无 cookie 请求会返回 HTTP 412），YouTube / Aaaornhub 视登录需求可选 |
+| node.exe（或 deno） | yt-dlp 默认只启用 deno，本脚本显式指向 node，YouTube 必需。Node ≥ 22.0（yt-dlp 官方最低要求） |
+| Cookie 文件 | Netscape 格式。**B 站必需**（无 cookie 请求会返回 HTTP 412），YouTube / Pornhub 视登录需求可选 |
 | Intel 核显（可选） | 有则 QSV HEVC 硬件转码，速度快、CPU 占用低；没有则用 libx265 软件编码，慢但结果一致 |
 
 ---
@@ -86,7 +84,7 @@ set "AUTO_UPDATE=0"
 | `FFMPEG_DIR` | ffmpeg.exe / ffprobe.exe 所在目录 | 找不到会回落到 PATH |
 | `NODE_DIR` | node.exe 所在目录（YouTube 必需） | 找不到会回落 PATH 里的 node → deno |
 | `OUT_DIR` | 下载输出目录 | `%USERPROFILE%\Desktop` 不存在时自动回落 `%OneDrive%\Desktop` |
-| `PROXY_URL` | 代理地址（仅 YouTube / Aaaornhub 使用） | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://` |
+| `PROXY_URL` | 代理地址（仅 YouTube / Pornhub 使用） | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://` |
 | `COOKIE_DIR` | Cookie 目录 | 默认与 yt-dlp 同目录 |
 | `MAX_H` | 最大画质上限（按**短边**计，竖屏 1080x1920 = 1080P），超过则触发 QSV HEVC 转码 | 1080；改 720 可省空间 |
 | `OUT_TPL` | 输出文件名模板 | 见[文件名模板备选](#文件名模板备选) |
@@ -118,18 +116,18 @@ m.bilibili.com_cookies.txt       移动端分享链会自动匹配这个（如�
 
 ```
 ============================================================
-  Video Downloader   output: C:\Users\you\Desktop
+  Video Downloader   output: "C:\Users\you\Desktop"
   Paste a URL and press Enter   ("f URL" = list formats only)
   Type q and press Enter to quit
 ============================================================
 
 Enter URL: https://www.bilibili.com/video/BV1xx411c7mD
 
-  Site     : bilibili   [ www.bilibili.com ]
+  Site     : bilibili   [ "www.bilibili.com" ]
   Proxy    : direct, no proxy
-  Cookie   : D:\Software\yt-dlp\www.bilibili.com_cookies.txt
+  Cookie   : "D:\Software\yt-dlp\www.bilibili.com_cookies.txt"
   Quality  : up to 1080p / H.264+AAC preferred / mp4
-  Node     : --js-runtimes node:D:\Software\node-v26.7.0-win-x64
+  Node     : --js-runtimes "node:D:\Software\node-v26.7.0-win-x64"
   Mode     : download
 
 [yt-dlp 输出...]

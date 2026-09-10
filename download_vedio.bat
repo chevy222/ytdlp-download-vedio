@@ -47,7 +47,7 @@ set "FFMPEG_DIR=D:\Software\ffmpeg\bin"
 
 rem Node.js directory. YouTube needs a JS runtime now; yt-dlp only enables
 rem deno by default. Node is used here because it is already installed.
-set "NODE_DIR=D:\Software\node-v26.4.0-win-x64"
+set "NODE_DIR=D:\Software\node-v26.7.0-win-x64"
 
 rem Output directory (Desktop root). Falls back to OneDrive\Desktop if the
 rem local profile Desktop does not exist.
@@ -147,26 +147,29 @@ if "%AUTO_UPDATE%"=="1" (
 )
 
 rem ---------- locate ffmpeg / ffprobe ----------
+rem FFMPEG_OPT is set OUTSIDE the if/else block on purpose: in the PATH
+rem fallback branch FFMPEG_EXE is only assigned at RUNTIME inside the
+rem block, and a %FFMPEG_EXE% inside ( ) would expand to the pre-block
+rem (empty) value - one of the cmd traps, see convert_h265.bat's README.
 set "FFMPEG_OPT="
 set "FFMPEG_EXE="
 set "FFPROBE_EXE="
 if exist "%FFMPEG_DIR%\ffmpeg.exe" (
-    set "FFMPEG_OPT=--ffmpeg-location "%FFMPEG_DIR%""
     set "FFMPEG_EXE=%FFMPEG_DIR%\ffmpeg.exe"
     set "FFPROBE_EXE=%FFMPEG_DIR%\ffprobe.exe"
 ) else (
     for /f "delims=" %%i in ('where ffmpeg.exe 2^>nul') do if not defined FFMPEG_EXE (
         set "FFMPEG_EXE=%%i"
-        set "FFPROBE_EXE=%%~dpi\ffprobe.exe"
+        set "FFPROBE_EXE=%%~dpifprobe.exe"
     )
-    if defined FFMPEG_EXE set "FFMPEG_OPT=--ffmpeg-location "%FFMPEG_EXE%""
 )
+if defined FFMPEG_EXE set FFMPEG_OPT=--ffmpeg-location "%FFMPEG_EXE%"
 if not defined FFMPEG_EXE echo [WARN] ffmpeg not found: no merge, no transcode, no amplify
 
 rem ---------- JS runtime: YouTube needs one, yt-dlp defaults to deno only ----------
 set "JSRT_OPT="
 if exist "%NODE_DIR%\node.exe" (
-    set "JSRT_OPT=--js-runtimes node:%NODE_DIR%"
+    set JSRT_OPT=--js-runtimes "node:%NODE_DIR%"
 ) else (
     for /f "delims=" %%i in ('where node.exe 2^>nul') do if not defined JSRT_OPT set "JSRT_OPT=--js-runtimes node"
     if not defined JSRT_OPT for /f "delims=" %%i in ('where deno.exe 2^>nul') do if not defined JSRT_OPT set "JSRT_OPT=--js-runtimes deno"
@@ -214,7 +217,7 @@ if not "%~1"=="" (
 :LOOP
 echo.
 echo ============================================================
-echo   Video Downloader   output: %OUT_DIR%
+echo   Video Downloader   output: "%OUT_DIR%"
 echo   Paste a URL and press Enter   ("f URL" = list formats only)
 echo   Type q and press Enter to quit
 echo ============================================================
@@ -267,13 +270,13 @@ if not defined HOST set "HOST=%TMPHOST%"
 set "COOKIE_OPT="
 set "COOKIE_FILE=%COOKIE_DIR%\%HOST%_cookies.txt"
 if not exist "%COOKIE_FILE%" set "COOKIE_FILE=%COOKIE_DIR%\www.%SITE%.com_cookies.txt"
-if exist "%COOKIE_FILE%" set "COOKIE_OPT=--cookies "%COOKIE_FILE%""
+if exist "%COOKIE_FILE%" set COOKIE_OPT=--cookies "%COOKIE_FILE%"
 if not exist "%COOKIE_FILE%" set "COOKIE_FILE="
 
 echo.
-echo   Site     : %SITE%   [ %HOST% ]
+echo   Site     : %SITE%   [ "%HOST%" ]
 if defined PROXY_OPT (echo   Proxy    : %PROXY_URL%) else (echo   Proxy    : direct, no proxy)
-if defined COOKIE_FILE (echo   Cookie   : %COOKIE_FILE%) else (echo   Cookie   : not used)
+if defined COOKIE_FILE (echo   Cookie   : "%COOKIE_FILE%") else (echo   Cookie   : not used)
 echo   Quality  : up to %MAX_H%p / H.264+AAC preferred / mp4
 if defined JSRT_OPT (echo   Node     : %JSRT_OPT%) else (echo   Node     : NOT FOUND, YouTube will fail)
 echo   Mode     : %MODE%
@@ -327,14 +330,19 @@ set "GAIN=0"
 set "ABK=128"
 set "VTXT=video copy"
 set "ATXT=audio copy"
-if "%TRANSCODE_ON%"=="1" call :PROBE_HEIGHT "%OUTFILE%"
-if "%AMPLIFY_ON%"=="1" call :PROBE_AUDIO "%OUTFILE%"
+rem The probes and REBUILD take the path via the CALLSRC variable, NOT as a
+rem call argument: `call` re-parses its arguments and doubles every ^ in
+rem them, so a title like "5^2.mp4" would no longer match the file on disk
+rem (same trap as convert_h265.bat - see its README).
+set "CALLSRC=%OUTFILE%"
+if "%TRANSCODE_ON%"=="1" call :PROBE_HEIGHT
+if "%AMPLIFY_ON%"=="1" call :PROBE_AUDIO
 if "%NEEDV%"=="0" if "%NEEDA%"=="0" goto AFTER_POST
-call :REBUILD "%OUTFILE%"
+call :REBUILD
 
 :AFTER_POST
 echo.
-echo   Done. Files are in: %OUT_DIR%
+echo   Done. Files are in: "%OUT_DIR%"
 
 :NEXT_ROUND
 if not "%~1"=="" goto END
@@ -355,9 +363,12 @@ rem  scale target for REBUILD: cap the short side, keep the other side).
 rem ==========================================================================
 :PROBE_HEIGHT
 if not defined FFPROBE_EXE exit /b 0
-set "SRC=%~1"
+set "SRC=%CALLSRC%"
 if not defined SRC exit /b 0
-if not exist "%SRC%" exit /b 0
+if not exist "%SRC%" (
+    echo   Transcode: "%SRC%" not found, skipped
+    exit /b 0
+)
 
 rem one probe feeds the size check and the MAINV detection
 "%FFPROBE_EXE%" -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of csv=p=0 "%SRC%" > "%HFILE%" 2>nul
@@ -429,9 +440,12 @@ rem ==========================================================================
 :PROBE_AUDIO
 if not defined FFMPEG_EXE exit /b 0
 if not defined FFPROBE_EXE exit /b 0
-set "SRC=%~1"
+set "SRC=%CALLSRC%"
 if not defined SRC exit /b 0
-if not exist "%SRC%" exit /b 0
+if not exist "%SRC%" (
+    echo   Volume   : "%SRC%" not found, skipped
+    exit /b 0
+)
 
 set "MAXVOL="
 
@@ -475,7 +489,10 @@ if "%GI%"=="0" (
     echo   Volume   : peak %MAXVOL% dB, already near full scale, skipped
     exit /b 0
 )
-if %GI% GTR %MAXGAIN% (
+rem GTR alone would miss GI == MAXGAIN with a fraction on top (a -24.7 dB
+rem peak with MAXGAIN=24); GEQ catches that. The second test spares an exact
+rem MAXGAIN.0 peak, which needs no capping.
+if %GI% GEQ %MAXGAIN% if not "%GAIN%"=="%MAXGAIN%.0" (
     set "GAIN=%MAXGAIN%"
     echo   Volume   : peak %MAXVOL% dB needs more than %MAXGAIN% dB, gain capped
 )
@@ -505,9 +522,12 @@ rem    can exit with a large negative code, which `if errorlevel 1` misses.
 rem ==========================================================================
 :REBUILD
 if not defined FFMPEG_EXE exit /b 0
-set "SRC=%~1"
+set "SRC=%CALLSRC%"
 if not defined SRC exit /b 0
-if not exist "%SRC%" exit /b 0
+if not exist "%SRC%" (
+    echo   Rebuild  : "%SRC%" not found, skipped
+    exit /b 0
+)
 
 rem Scaling path decodes on the GPU. -hwaccel qsv feeds QSV frames straight
 rem into the filter graph, so hwdownload is mandatory before the CPU scale.
