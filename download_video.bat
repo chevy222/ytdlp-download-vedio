@@ -51,7 +51,7 @@ set "FFMPEG_DIR=D:\Software\ffmpeg\bin"
 
 rem Node.js directory. YouTube needs a JS runtime now; yt-dlp only enables
 rem deno by default. Node is used here because it is already installed.
-set "NODE_DIR=D:\Software\node-v26.7.0-win-x64"
+set "NODE_DIR=D:\Software\node-v26.4.0-win-x64"
 
 rem Output directory (Desktop root). Falls back to OneDrive\Desktop if the
 rem local profile Desktop does not exist.
@@ -75,8 +75,12 @@ rem 1920x1080 AND 1080x1920 while still excluding 1440p+ (2560x1440 /
 rem 1440x2560).
 set /a MAX_LONG=(MAX_H*16+8)/9
 
-rem Hard ceiling for what we are willing to DOWNLOAD. Without it an 8K-only
-rem video would download tens of GB only to be re-encoded to MAX_H anyway.
+rem Download ceiling. Levels 1-4 above stay under MAX_H; this one decides what
+rem a source that ONLY offers more than MAX_H is allowed to pull: with a 4K tier
+rem available, level 5 takes 4K (3840x2160) and REBUILD brings it down, so an
+rem 8K+4K video never downloads its 8K stream. It is NOT an absolute wall: if
+rem every format is above it, levels 6/7 still fall back to the best available,
+rem because a very large file beats downloading nothing at all.
 set "MAX_DL_H=2160"
 
 rem Same long-side companion for the download ceiling above.
@@ -201,9 +205,9 @@ rem   3. any codec <=MAX_LONG dims + best audio
 rem   4. single file <=MAX_LONG dims  (a native <=MAX_H file beats downloading
 rem      a bigger stream just to re-encode it back down)
 rem   5. any codec <=MAX_DL_LONG dims + best audio   (triggers the rebuild
-rem      step, and MAX_DL_H keeps an 8K-only video from downloading tens of GB)
-rem   6. best video + best audio, any resolution
-rem   7. best single file, any resolution
+rem      step; picks the 4K tier of a >4K source instead of its 8K stream)
+rem   6. best video + best audio, any resolution     (last resort, uncapped)
+rem   7. best single file, any resolution            (last resort, uncapped)
 set "FORMAT=bv*[height<=%MAX_LONG%][width<=%MAX_LONG%][vcodec*=avc]+ba[acodec*=mp4a]/bv*[height<=%MAX_LONG%][width<=%MAX_LONG%][vcodec*=avc]+ba/bv*[height<=%MAX_LONG%][width<=%MAX_LONG%]+ba/b[height<=%MAX_LONG%][width<=%MAX_LONG%]/bv*[height<=%MAX_DL_LONG%][width<=%MAX_DL_LONG%]+ba/bv*+ba/b"
 
 rem Sort: H.264 first, then `lang` so the original audio track beats dubbed
@@ -252,30 +256,42 @@ set "URL=%URL: =%"
 if not defined URL goto LOOP
 for %%q in (q quit exit) do if /i "%URL%"=="%%q" goto END
 
-rem ---------- detect site ----------
-rem substring comparison instead of `echo | findstr`: no child processes, and
-rem no risk from ^ or % characters in the URL
+rem ---------- extract host from the URL ----------
+rem Done BEFORE site detection: the host is the only reliable place to match a
+rem site. Matching the whole URL as a substring was wrong - "x.com" also sits
+rem inside netflix.com / box.com / max.com, which then got SITE=twitter and were
+rem dragged through the SOCKS5 proxy for nothing. Still one variable expansion
+rem per test, still no child process, still no risk from ^ or % in the URL.
+rem ":" is in the delims too, so "https://x.com:443/..." yields a clean host and
+rem the cookie file name stays free of the port.
+set "TMPHOST=%URL:*//=%"
+set "HOST="
+for /f "delims=/:?&" %%H in ("%TMPHOST%") do set "HOST=%%H"
+if not defined HOST set "HOST=%TMPHOST%"
+
+rem ---------- detect site from the host ----------
+rem Either the bare host, or the host suffix behind a dot (www.* / m.*). The
+rem ~-N length is that of ".<domain>" including the leading dot. /i because the
+rem old substring tests were case sensitive, so an uppercase URL slipped through.
 set "SITE=other"
 set "PROXY_OPT="
-if not "%URL:youtube.com=%"=="%URL%" set "SITE=youtube"
-if not "%URL:youtu.be=%"=="%URL%" set "SITE=youtube"
-if not "%URL:pornhub.com=%"=="%URL%" set "SITE=pornhub"
-if not "%URL:bilibili.com=%"=="%URL%" set "SITE=bilibili"
-if not "%URL:b23.tv=%"=="%URL%" set "SITE=bilibili"
+if /i "%HOST%"=="youtube.com" set "SITE=youtube"
+if /i "%HOST:~-12%"==".youtube.com" set "SITE=youtube"
+if /i "%HOST%"=="youtu.be" set "SITE=youtube"
+if /i "%HOST%"=="pornhub.com" set "SITE=pornhub"
+if /i "%HOST:~-12%"==".pornhub.com" set "SITE=pornhub"
+if /i "%HOST%"=="bilibili.com" set "SITE=bilibili"
+if /i "%HOST:~-13%"==".bilibili.com" set "SITE=bilibili"
+if /i "%HOST%"=="b23.tv" set "SITE=bilibili"
 rem X (formerly Twitter): x.com is the current host, twitter.com still appears
-rem in older / shared links. Both map to SITE=twitter. Substring match is safe
-rem here - no YouTube / Pornhub / Bilibili URL contains either token.
-if not "%URL:x.com=%"=="%URL%" set "SITE=twitter"
-if not "%URL:twitter.com=%"=="%URL%" set "SITE=twitter"
+rem in older / shared links. Both map to SITE=twitter.
+if /i "%HOST%"=="x.com" set "SITE=twitter"
+if /i "%HOST:~-6%"==".x.com" set "SITE=twitter"
+if /i "%HOST%"=="twitter.com" set "SITE=twitter"
+if /i "%HOST:~-12%"==".twitter.com" set "SITE=twitter"
 if "%SITE%"=="youtube" set "PROXY_OPT=--proxy %PROXY_URL%"
 if "%SITE%"=="pornhub" set "PROXY_OPT=--proxy %PROXY_URL%"
 if "%SITE%"=="twitter" set "PROXY_OPT=--proxy %PROXY_URL%"
-
-rem ---------- extract host from URL, match cookie ----------
-set "TMPHOST=%URL:*//=%"
-set "HOST="
-for /f "delims=/?&" %%H in ("%TMPHOST%") do set "HOST=%%H"
-if not defined HOST set "HOST=%TMPHOST%"
 
 set "COOKIE_OPT="
 set "COOKIE_FILE=%COOKIE_DIR%\%HOST%_cookies.txt"
@@ -302,6 +318,13 @@ echo   Quality  : up to %MAX_H%p / H.264+AAC preferred / mp4
 if defined JSRT_OPT (echo   Node     : %JSRT_OPT%) else (echo   Node     : NOT FOUND, YouTube will fail)
 echo   Mode     : %MODE%
 echo.
+
+rem Baseline for the post-process fallback: the newest .mp4 already sitting in
+rem OUT_DIR. Taken before BOTH branches on purpose - if list mode ("f URL") ran
+rem without a baseline, the fallback would see the current newest file as "new"
+rem and rebuild some unrelated video off the Desktop.
+call :NEWEST_MP4
+set "MP4_BEFORE=%MP4_NEWEST%"
 
 if "%MODE%"=="list" (
     "%YTDLP%" %PROXY_OPT% %COOKIE_OPT% %JSRT_OPT% -F "%URL%"
@@ -348,11 +371,37 @@ if not "%ERRORLEVEL%"=="0" (
 )
 
 rem ---------- post-process: one rebuild pass for scale + amplify ----------
+rem Two ways to learn which file yt-dlp actually wrote (the name comes from the
+rem video title, so it cannot be known before the download):
+rem   1. --print-to-file stored the real path in %LASTFILE%. Good for ASCII
+rem      titles only. For a Chinese title it does NOT work: yt-dlp writes that
+rem      file as UTF-8, cmd reads it back in the console code page (936 on a
+rem      Chinese Windows), so the path comes out as mojibake and "if not exist"
+rem      reports "no such file". Reproduced in test: the mojibake path does not
+rem      resolve, while the real file is sitting right there.
+rem   2. Fall back to the newest *.mp4 in OUT_DIR, snapshotted before the
+rem      download (MP4_BEFORE). This name comes out of "dir", which encodes it
+rem      and cmd decodes it with the same code page, so Chinese titles survive
+rem      the round trip. CREATION time, not mtime: yt-dlp can stamp a file's
+rem      mtime with the server's Last-modified header.
+rem Both are skipped when yt-dlp downloaded nothing - e.g. --no-overwrites
+rem skipped the file because it already exists - in that case there is no new
+rem mp4 and nothing should be rebuilt.
 set "OUTFILE="
-if not exist "%LASTFILE%" goto AFTER_POST
-set /p "OUTFILE=" < "%LASTFILE%"
-if not defined OUTFILE goto AFTER_POST
+if not exist "%LASTFILE%" goto RESOLVE_FALLBACK
+for /f "usebackq delims=" %%a in ("%LASTFILE%") do if not defined OUTFILE set "OUTFILE=%%a"
+if not defined OUTFILE goto RESOLVE_FALLBACK
+if not exist "%OUTFILE%" goto RESOLVE_FALLBACK
+goto HAVE_OUTFILE
+
+:RESOLVE_FALLBACK
+call :NEWEST_MP4
+if not defined MP4_NEWEST goto AFTER_POST
+if /i "%MP4_NEWEST%"=="%MP4_BEFORE%" goto AFTER_POST
+set "OUTFILE=%OUT_DIR%\%MP4_NEWEST%"
 if not exist "%OUTFILE%" goto AFTER_POST
+
+:HAVE_OUTFILE
 echo   File     : "%OUTFILE%"
 
 set "NEEDV=0"
@@ -386,6 +435,26 @@ exit /b 0
 
 
 rem ==========================================================================
+rem  NEWEST_MP4 - name (no path) of the most recently CREATED *.mp4 in OUT_DIR,
+rem  or empty when there is no mp4 at all. Used as the fallback way to find out
+rem  what yt-dlp wrote - see the post-process block in the main flow for why the
+rem  --print-to-file path cannot be trusted for non-ASCII titles.
+rem
+rem  "dir" is a child process, but that is the point: it emits the name in the
+rem  console code page and cmd reads the pipe back with the same code page, so a
+rem  Chinese title survives. A UTF-8 file written by yt-dlp does not.
+rem  /o-d /t:c sorts by creation time, newest first, so the first line wins.
+rem  Creation time rather than mtime because yt-dlp can stamp the mtime from
+rem  the server's Last-modified header, while a freshly written file always has
+rem  a fresh creation time.
+rem ==========================================================================
+:NEWEST_MP4
+set "MP4_NEWEST="
+for /f "delims=" %%F in ('dir /b /a-d /o-d /t:c "%OUT_DIR%\*.mp4" 2^>nul') do if not defined MP4_NEWEST set "MP4_NEWEST=%%F"
+exit /b 0
+
+
+rem ==========================================================================
 rem  PROBE_HEIGHT - set NEEDV=1 when the MAIN video stream's SHORT side is
 rem  above MAX_H. Portrait video (Shorts): 1080x1920 IS 1080p - its height
 rem  1920 must not trigger a downscale, its short side 1080 must.
@@ -413,7 +482,11 @@ for /f "usebackq tokens=1,2,3 delims=," %%c in ("%HFILE%") do if not defined H0 
 )
 
 rem cover art at v:0 means the real video stream is v:1; probe THAT one,
-rem the cover's dimensions say nothing about the video
+rem the cover's dimensions say nothing about the video.
+rem Measured layout of a yt-dlp output that had its thumbnail embedded by
+rem mutagen: video v:0, audio, cover mjpeg v:1 (attached_pic=1) - so MAINV
+rem stays 0 there and the encoding below correctly targets v:0. The MAINV=1
+rem branch is the fallback for containers that put the cover first.
 set "MAINV=0"
 if /i "%V0C%"=="mjpeg" set "MAINV=1"
 if /i "%V0C%"=="png"   set "MAINV=1"

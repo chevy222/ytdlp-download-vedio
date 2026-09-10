@@ -201,17 +201,35 @@ ffmpeg -y -i src.mp4 ^
 - QSV 失败自动回落到 `libx265`（preset 由 `X265_PRESET` 控制）
 - 替换前还会校验产物大小（< 1 KB 视为失败，保留原文件）
 
+**实测记录**（本机 ffmpeg + Intel QSV，跑的是脚本里同一条命令）：
+
+| 用例 | 结果 |
+| --------------------------------------------- | ---------------------------------------------- |
+| 2560x1440（横屏）→ `scale=-2:1080` | hevc 1920x1080 ✓ |
+| 1440x2560（竖屏）→ `scale=1080:-2` | hevc 1080x1920 ✓ 短边判定正确 |
+| `-hwaccel qsv` + `hwdownload,format=nv12,scale=` | exit 0 ✓ |
+| yt-dlp 用 mutagen 写入的 `covr` 封面 | 转码后仍在（`covr` 原子 + `attached_pic` 流都保留）✓ |
+| 源文件里封面流的位置 | yt-dlp/mutagen 的 mp4 是 **主视频 v:0、封面 v:1**（`attached_pic=1`），所以 `MAINV` 通常是 0；`MAINV=1` 那条分支是给封面排在前面的容器兜底的 |
+| `ffprobe -show_entries stream=codec_name,width,height -of csv=p=0` | 输出 `h264,2560,1440`，与 token1/2/3 对齐 ✓ |
+| `volumedetect` 的 `max_volume` 行 | `[Parsed_volumedetect_0 @ ...] max_volume: -17.2 dB`，token5 = `-17.2` ✓ |
+| ffmpeg 失败时的退出码 | QSV/滤波失败会给 `4294967274`（= -22）这类大数，`if not "%ERRORLEVEL%"=="0"` 判定为失败 ✓ |
+
 ---
 
-### 那个 `%TEMP%\ytdlp_last*.txt` 是什么
+### 脚本怎么知道刚下到的文件叫什么
 
-日志最后一行 `Writing '%(filepath)s' to: ...\ytdlp_last.txt` 是 `--print-to-file` 的输出，**不是垃圾文件，删了后处理就失效**。
+输出文件名来自视频标题（`%(title).180B.%(ext)s`），下载前无法预知，所以脚本有两条路：
 
-原因：输出文件名来自视频标题（`%(title).180B.%(ext)s`），脚本在下载前无法预知最终叫什么。所以让 yt-dlp 下载完成后把**真实落盘路径**写进这个临时文件，后续的 `PROBE_HEIGHT` / `PROBE_AUDIO` / `REBUILD` 才知道该处理哪个文件。
+1. **首选**：yt-dlp 用 `--print-to-file after_move` 把**真实落盘路径**写进 `%TEMP%\ytdlp_last<随机数>.txt`（日志最后一行 `Writing '%(filepath)s' to: ...` 就是它）。**只对纯 ASCII 标题有效。**
+2. **兜底**：下载前先记下输出目录里最新的 .mp4（按**创建时间**），下载后再取一次，变了就说明那个新文件是本轮产物。中文标题走这条路。
 
-- 文件名带 `%RANDOM%` 后缀，同时开两个脚本实例不会互相踩
-- 脚本退出前会删掉；异常退出时残留也无害，下次启动会先删除
-- 如果想改别的传递方式，可以换成 `--print after_move` 配合 `-q` 直接用 `for /f` 捕获，但那样就看不到 yt-dlp 的下载进度了
+**为什么中文标题不能用第 1 条**（本地实测）：yt-dlp 把路径按 **UTF-8** 写进临时文件，cmd 却按**当前代码页**（中文 Windows = 936/GBK）读回来，于是 `封面测试标题.mp4` 变成 `娴嬭瘯鏍囬...mp4`——`if not exist` 报“文件不存在”，整个后处理被**静默跳过**（下载、嵌封面、嵌元数据都正常，只是不放大、不转码）。第 2 条的路径来自 `dir` 的输出，编码和解码用的是同一个代码页，中文标题能正常通过。
+
+- 两条都没命中就**不重建任何文件**（例如 `--no-overwrites` 跳过了下载，本来就没有新文件）
+- 兜底看**创建时间**而不是修改时间：yt-dlp 可能拿服务端 `Last-modified` 写 mtime，而刚写出的文件创建时间一定是新的
+- 兜底是启发式的：风险窗口只有“下载完成后到取最新值”这一瞬间，但万一你同时往输出目录另存了更新的 mp4，它可能被当成产物重编码。想要绝对精确只有两条路——牺牲实时进度（`for /f` 捕获 yt-dlp 输出）或每次下载多起一次 PowerShell 做编码转换
+- 临时文件带 `%RANDOM%` 后缀，两个实例不会互相踩；正常退出会删掉，异常退出后**旧随机数的残留不会自动清理**（`%TEMP%\ytdlp_*.txt` 可以随手删）
+
 
 ### 交互细节
 
@@ -241,23 +259,28 @@ ffmpeg -y -i src.mp4 ^
 结果   : 0.0 dB  （满刻度，无削波）
 ```
 
+> 实测（1000 Hz 正弦 + AAC 128k 重编码）：按 `volume = -峰值` 放大再编码后，测到的峰值比理论值高约 **0.2 dB**。所以“不削波”成立，但准确说法是“0 dBFS ± 0.2 dB”，不是数学上的精确 0。
+
 关闭：CONFIG 段 `set "AMPLIFY_ON=0"`。
 
 ---
 
 ## 站点分流
 
-URL 检测用子串比较（`if not "%URL:youtube.com=%"=="%URL%"`），不启动子进程，URL 里的 `^`、`%` 也不会被管道破坏，命中即分流：
+先取 HOST，再用 HOST 匹配站点：**精确等于**，或以点结尾的**后缀**（`www.youtube.com`、`m.x.com`）。全程只有变量展开，不起子进程，URL 里的 `^`、`%` 也不会被管道破坏。
 
-| 站点关键字                      | SITE 标签      | 代理                            | Cookie 回落                      |
+> 早期版本直接拿整条 URL 做子串匹配（`%URL:x.com=%`），`netflix.com` / `box.com` / `max.com` 这类域名里也含 `x.com`，会被误判成 X 而强行走代理；而且那个匹配区分大小写。改成 HOST 匹配后两个问题都消失了。
+> HOST 提取的 delims 里带了 `:`，所以 `https://x.com:443/...` 得到干净的 `x.com`，cookie 文件名也不带端口。
+
+| 站点 HOST | SITE 标签 | 代理 | Cookie 回落 |
 | -------------------------- | ------------ | ----------------------------- | ------------------------------ |
-| `youtube.com` / `youtu.be` | youtube      | SOCKS5 10808                  | `www.youtube.com_cookies.txt`  |
-| `pornhub.com`            | pornhub    | SOCKS5 10808                  | `www.pornhub.com_cookies.txt` |
-| `bilibili.com` / `b23.tv`  | bilibili     | 直连                            | `www.bilibili.com_cookies.txt` |
-| `x.com` / `twitter.com`    | twitter      | SOCKS5 10808                  | 姊妹域名互回退 `x.com` ↔ `twitter.com` |
-| 其它                         | other        | 直连                            | 无                              |
+| `youtube.com` / `*.youtube.com` / `youtu.be` | youtube | SOCKS5 10808 | `www.youtube.com_cookies.txt` |
+| `pornhub.com` / `*.pornhub.com` | pornhub | SOCKS5 10808 | `www.pornhub.com_cookies.txt` |
+| `bilibili.com` / `*.bilibili.com` / `b23.tv` | bilibili | 直连 | `www.bilibili.com_cookies.txt` |
+| `x.com` / `*.x.com` / `twitter.com` / `*.twitter.com` | twitter | SOCKS5 10808 | 姊妹域名互回退 `x.com` ↔ `twitter.com` |
+| 其它 | other | 直连 | 无 |
 
-Cookie 匹配优先看 URL 的真实 HOST，站点级回退只是兜底。
+Cookie 名优先用 URL 的真实 HOST（如 `m.bilibili.com_cookies.txt`），站点级回退只是兜底。
 
 ---
 
@@ -367,12 +390,26 @@ libx265 兜底速度大约是 QSV 的 1/5–1/10，但结果画质一致。
 
 所以本脚本**必须**保存为纯 ASCII（= UTF-8 无 BOM = ANSI，字节一致）。要加中文注释请另存为 GBK，不要存 UTF-8。
 
+### 改脚本前必看：几个 cmd 解析陷阱
+
+这些坑本脚本都真实踩过，改代码时不要“顺手清理”掉防护写法：
+
+| 陷阱 | 症状 | 正确写法 |
+| ---------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `if ( ... )` 块里的 `echo` 出现**未转义右括号** | 报 `此时不应有 xxx。`（xxx = 右括号后面那个词），**整个 .bat 立刻终止**（解析错误终止批处理，不是跳过一行），连“下载完成后”那段后处理都进不去 | 用 `^)` 转义，或整行加引号；块内的 `rem` 注释同样不能出现裸右括号 |
+| 在 `( )` 块内读 `%ERRORLEVEL%` / 用 `if errorlevel` | 拿到进入块之前的旧值，失败被判成成功 | 判断一律放在块**外**；且按**文本**比较（ffmpeg 会返回 `4294967274` 这种大数，`if errorlevel 1` 会漏掉负值） |
+| `set "X=--opt "%PATH%""` 这类**嵌套引号** | 路径含 `( )` 或 `&` 时报 `\file was unexpected at this time`，或变量被静默截断 | 用不带动引号的 `set X=--opt "%PATH%"`，让路径落在同一段引号里（`FFMPEG_OPT` / `COOKIE_OPT` 就是这么写的） |
+| 把 yt-dlp 写的 UTF-8 文本文件当路径读回 | 中文标题变乱码 → `if not exist` 说不存在 → 后处理被**静默跳过** | 见[脚本怎么知道刚下到的文件叫什么](#脚本怎么知道刚下到的文件叫什么) |
+| `for /f` + 引号对不上 | `for /f "..." %%i in ('exe "arg"')` 里引号数量为奇数时，cmd 的引号配对会错位 | 让 `'...'` 里的引号成对（`where xxx 2^>nul` 那几行就是范例） |
+
 ---
 
 ## 已知限制
 
 - **多音轨视频不做音量归一化**：见上文 AMPLIFY 跳过规则
-- **8K 源最多下 4K**：`MAX_DL_H=2160` 限制了下载高度。确实想下 8K 请把它改大，同时把 `TRANSCODE_ON` 关掉或把 `MAX_H` 提到 2160
+- **下载高度上限不是绝对的**：`MAX_DL_H=2160` 让 >4K 的源优先取 4K 那档（第 5 级，下完再降到 `MAX_H`），但如果**所有**格式都超过它，第 6/7 级仍会退到“最佳分辨率”——宁可下个大文件也不下不到。真想彻底禁掉 8K，得删掉 `FORMAT` 串尾部的 `bv*+ba/b` 两级（代价是那类视频直接失败）
+- **带旋转元数据的 >MAX_H 源可能被缩错方向**：缩放目标用的宽高来自 ffprobe 的**原始**值，而重编码时 ffmpeg 默认按**旋转后**的画面进滤波，两者不一致时短边会算错（如原始 3840x2160 + rotate=90）。这类源建议 `TRANSCODE_ON=0`，或改用 `convert_h265.bat` 手动转
+- **后处理靠“目录里最新的 mp4”兜底**：见[上文](#脚本怎么知道刚下到的文件叫什么)，是启发式而非绝对精确
 - **空回车不会退出**：只有 `q` / `quit` / `exit` 退出循环
 - **播放列表不下**：`--no-playlist`，只下 URL 指向的单个视频。想下整个播放列表请手动去掉这个参数
 - **>1080P 源必然重编码**：无法"零损失"降到 1080P；想要零损失请把 `MAX_H` 改成 2160 或 `TRANSCODE_ON=0`（然后接受 4K 文件）
