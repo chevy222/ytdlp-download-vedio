@@ -28,8 +28,8 @@
 | 字幕     | 不下载、不嵌入（`--no-write-subs --no-write-auto-subs --no-embed-subs`）                                |
 | 音轨     | `-S "vcodec:h264,lang,..."` 中的 `lang` 字段让**原声音轨**在多音轨视频里胜出配音轨                                  |
 | 音量     | 下载完成后峰值归一到 0 dBFS，保证不削波（见[音量放大原理](#音量放大原理amplify)）                                             |
-| 代理     | 仅 `youtube.com` / `youtu.be` / `pornhub.com` 走 `socks5://127.0.0.1:10808`，其它直连                 |
-| Cookie | 按 URL 真实 HOST 自动匹配（如 `m.bilibili.com_cookies.txt`），带站点级回退到 `www.<site>.com_cookies.txt`        |
+| 代理     | 仅 `youtube.com` / `youtu.be` / `pornhub.com` / `x.com` / `twitter.com` 走 `socks5://127.0.0.1:10808`，其它直连  |
+| Cookie | 按 URL 真实 HOST 自动匹配（如 `m.bilibili.com_cookies.txt`），带站点级回退到 `www.<site>.com_cookies.txt`；X/Twitter 额外回退到 `x.com` ↔ `twitter.com` 姊妹域名 |
 | 合集     | `--no-playlist`，只下你点开的那一个视频                                                                    |
 | 并发     | `-N 4`（`--concurrent-fragments 4`），DASH/HLS 分片并行下载，B 站与 YouTube 提速 2–4 倍                       |
 | 输入方式   | 双击后粘贴 / 把链接拖到 .bat 图标上 / 作为 `%1` 参数传入（后两种单次运行不进循环，失败时会暂停显示原因）                                  |
@@ -49,7 +49,7 @@
 | [yt-dlp.exe](https://github.com/yt-dlp/yt-dlp/releases) | 建议 2025.11 起（YouTube 开始强制要求 JS 运行时）                                                |
 | ffmpeg + ffprobe                                        | 放同一目录；用于音画合并、封面嵌入、转码与音量处理。ffmpeg 需带 **hevc_qsv** 编码器（Intel 核显）；无 QSV 会自动回落 libx265 |
 | node.exe（或 deno）                                        | yt-dlp 默认只启用 deno，本脚本显式指向 node，YouTube 必需。Node ≥ 22.0（yt-dlp 官方最低要求）               |
-| Cookie 文件                                               | Netscape 格式。**B 站必需**（无 cookie 请求会返回 HTTP 412），YouTube / Pornhub 视登录需求可选           |
+| Cookie 文件                                               | Netscape 格式。**B 站必需**（无 cookie 请求会返回 HTTP 412），**X/Twitter 必需登录态 cookie**（否则报 Login required），YouTube / Pornhub 视登录需求可选           |
 | Intel 核显（可选）                                            | 有则 QSV HEVC 硬件转码，速度快、CPU 占用低；没有则用 libx265 软件编码，慢但结果一致                              |
 
 ---
@@ -84,7 +84,7 @@ set "AUTO_UPDATE=0"
 | `FFMPEG_DIR`   | ffmpeg.exe / ffprobe.exe 所在目录                           | 找不到会回落到 PATH                                          |
 | `NODE_DIR`     | node.exe 所在目录（YouTube 必需）                               | 找不到会回落 PATH 里的 node → deno                            |
 | `OUT_DIR`      | 下载输出目录                                                  | `%USERPROFILE%\Desktop` 不存在时自动回落 `%OneDrive%\Desktop` |
-| `PROXY_URL`    | 代理地址（仅 YouTube / Pornhub 使用）                            | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://`        |
+| `PROXY_URL`    | 代理地址（仅 YouTube / Pornhub / X(Twitter) 使用）                            | v2rayN 默认 SOCKS5 端口 10808；HTTP 端口就改成 `http://`        |
 | `COOKIE_DIR`   | Cookie 目录                                               | 默认与 yt-dlp 同目录                                        |
 | `MAX_H`        | 最大画质上限（按**短边**计，竖屏 1080x1920 = 1080P），超过则触发 QSV HEVC 转码 | 1080；改 720 可省空间                                       |
 | `OUT_TPL`      | 输出文件名模板                                                 | 见[文件名模板备选](#文件名模板备选)                                  |
@@ -105,13 +105,16 @@ www.bilibili.com_cookies.txt     B 站必需，否则 HTTP 412
 www.youtube.com_cookies.txt      可选，YouTube 要求登录时才需要
 www.pornhub.com_cookies.txt      可选
 m.bilibili.com_cookies.txt       移动端分享链会自动匹配这个（如果放了）
+x.com_cookies.txt                X/Twitter 必需（登录态），配合代理才能拿到视频
+twitter.com_cookies.txt          与 x.com 通用，二者放其一即可，姊妹域名会自动互相回退
 ```
 
 匹配顺序：
 
 1. 从 URL 提取真实 HOST（如 `www.bilibili.com`），找 `<HOST>_cookies.txt`
-2. 找不到则回落到 `www.<SITE>.com_cookies.txt`（SITE = youtube / bilibili / pornhub / other）
-3. 都找不到就匿名下载
+2. 找不到则回落到 `www.<SITE>.com_cookies.txt`（SITE = youtube / bilibili / pornhub / twitter / other）
+3. X/Twitter 专属再回退：`www.x.com_cookies.txt` → `x.com_cookies.txt` → `twitter.com_cookies.txt`（因为 `x.com` 与 `twitter.com` 是同一账号同一会话，导出哪个域名、放哪个文件名都能解锁另一个，双向对称）
+4. 都找不到就匿名下载
 
 ### 3. 双击运行
 
@@ -249,8 +252,9 @@ URL 检测用子串比较（`if not "%URL:youtube.com=%"=="%URL%"`），不启�
 | 站点关键字                      | SITE 标签      | 代理                            | Cookie 回落                      |
 | -------------------------- | ------------ | ----------------------------- | ------------------------------ |
 | `youtube.com` / `youtu.be` | youtube      | SOCKS5 10808                  | `www.youtube.com_cookies.txt`  |
-| `pornhub.com`              | SOCKS5 10808 | `www.pornhub.com_cookies.txt` |                                |
+| `pornhub.com`            | pornhub    | SOCKS5 10808                  | `www.pornhub.com_cookies.txt` |
 | `bilibili.com` / `b23.tv`  | bilibili     | 直连                            | `www.bilibili.com_cookies.txt` |
+| `x.com` / `twitter.com`    | twitter      | SOCKS5 10808                  | 姊妹域名互回退 `x.com` ↔ `twitter.com` |
 | 其它                         | other        | 直连                            | 无                              |
 
 Cookie 匹配优先看 URL 的真实 HOST，站点级回退只是兜底。
@@ -321,6 +325,15 @@ set "OUT_TPL=%%(title).180B [%%(id)s].%%(ext)s"                  <-- 加 BV/视�
 2. 代理是否开启，`socks5://127.0.0.1:10808` 端口是否真是 SOCKS5
 3. 导出 `www.youtube.com_cookies.txt`（登录状态下的 cookie）
 4. 极端情况需要 PO Token，参见 yt-dlp 官方 wiki
+
+### X/Twitter "Login required" / 拿不到格式
+
+X（`x.com` / `twitter.com`）的视频**强制登录**，匿名请求会直接返回 `Login required` 或只有极低画质。按顺序排查：
+
+1. 代理是否开启（脚本对 X/Twitter 自动走 `PROXY_URL`，端口错了必挂）
+2. 放登录态 cookie：在**已登录**的浏览器导出 `x.com_cookies.txt` 或 `twitter.com_cookies.txt`，放其一即可（脚本会在姊妹域名间自动回退）
+3. cookie 是否过期：登录后重新导出一次；只导出的游客态 cookie 无效
+4. 用 `f https://x.com/...` 先列格式，能列出 `https-x-pc` 之类才说明登录态通了
 
 ### 代理相关
 
@@ -398,4 +411,7 @@ D:\Software\node-v26.7.0-win-x64\
 
 ## 许可证
 
-MIT —— 随便用，不提供任何担保。
+```text
+MIT License
+Copyright (c) 2026 Chevy Yang
+```

@@ -30,9 +30,13 @@ rem    - Thumbnail embedded (converted to JPG first), metadata embedded
 rem    - No subtitles written or embedded
 rem    - After download: ONE rebuild pass does peak-normalize (to 0 dBFS) and
 rem      >MAX_H downscale together, so the file is rewritten at most once
-rem    - SOCKS5 proxy 127.0.0.1:10808 for YouTube and Pornhub only
+rem    - SOCKS5 proxy 127.0.0.1:10808 for YouTube, Pornhub and X/Twitter only
+rem      (all are blocked in CN and need the proxy; X/Twitter also needs login
+rem      cookies to reach the video at all)
 rem    - Bilibili direct, b23.tv short link recognized
-rem    - Cookie file auto-matched by URL host, then by site name
+rem    - Cookie file auto-matched by URL host, then by site name; X/Twitter
+rem      additionally probes the sibling x.com / twitter.com cookie file since
+rem      either domain unlocks the other
 rem    - Single video only (--no-playlist), no overwrite
 rem    - Output: Desktop root
 rem ============================================================================
@@ -53,7 +57,7 @@ rem Output directory (Desktop root). Falls back to OneDrive\Desktop if the
 rem local profile Desktop does not exist.
 set "OUT_DIR=%USERPROFILE%\Desktop"
 
-rem SOCKS5 proxy for YouTube / Pornhub only
+rem SOCKS5 proxy for YouTube / Pornhub / X(Twitter) only
 set "PROXY_URL=socks5://127.0.0.1:10808"
 
 rem Cookie directory. Files are named <HOST>_cookies.txt
@@ -258,8 +262,14 @@ if not "%URL:youtu.be=%"=="%URL%" set "SITE=youtube"
 if not "%URL:pornhub.com=%"=="%URL%" set "SITE=pornhub"
 if not "%URL:bilibili.com=%"=="%URL%" set "SITE=bilibili"
 if not "%URL:b23.tv=%"=="%URL%" set "SITE=bilibili"
+rem X (formerly Twitter): x.com is the current host, twitter.com still appears
+rem in older / shared links. Both map to SITE=twitter. Substring match is safe
+rem here - no YouTube / Pornhub / Bilibili URL contains either token.
+if not "%URL:x.com=%"=="%URL%" set "SITE=twitter"
+if not "%URL:twitter.com=%"=="%URL%" set "SITE=twitter"
 if "%SITE%"=="youtube" set "PROXY_OPT=--proxy %PROXY_URL%"
 if "%SITE%"=="pornhub" set "PROXY_OPT=--proxy %PROXY_URL%"
+if "%SITE%"=="twitter" set "PROXY_OPT=--proxy %PROXY_URL%"
 
 rem ---------- extract host from URL, match cookie ----------
 set "TMPHOST=%URL:*//=%"
@@ -270,6 +280,17 @@ if not defined HOST set "HOST=%TMPHOST%"
 set "COOKIE_OPT="
 set "COOKIE_FILE=%COOKIE_DIR%\%HOST%_cookies.txt"
 if not exist "%COOKIE_FILE%" set "COOKIE_FILE=%COOKIE_DIR%\www.%SITE%.com_cookies.txt"
+rem X/Twitter: twitter.com and x.com cookies are interchangeable (same account,
+rem same session). Make the sibling fallback SYMMETRIC so "either file is enough"
+rem holds in BOTH directions. The generic www.%SITE% line above already covers
+rem www.twitter.com; here we additionally probe the sibling domain's bare and
+rem www file names. Case: an x.com URL with only a bare twitter.com_cookies.txt
+rem would otherwise fall through (www.twitter.com / www.x.com / x.com all miss),
+rem wrongly reporting "cookie not used". All guarded to SITE=twitter so a stray
+rem x.com_cookies.txt is never attached to some other site's download.
+if "%SITE%"=="twitter" if not exist "%COOKIE_FILE%" set "COOKIE_FILE=%COOKIE_DIR%\www.x.com_cookies.txt"
+if "%SITE%"=="twitter" if not exist "%COOKIE_FILE%" set "COOKIE_FILE=%COOKIE_DIR%\x.com_cookies.txt"
+if "%SITE%"=="twitter" if not exist "%COOKIE_FILE%" set "COOKIE_FILE=%COOKIE_DIR%\twitter.com_cookies.txt"
 if exist "%COOKIE_FILE%" set COOKIE_OPT=--cookies "%COOKIE_FILE%"
 if not exist "%COOKIE_FILE%" set "COOKIE_FILE="
 
@@ -311,6 +332,8 @@ if not "%ERRORLEVEL%"=="0" (
     echo   2. Proxy not running or wrong port: check %PROXY_URL%
     echo   3. Format not available: run  f URL  to list real formats
     echo   4. Cookie expired: export cookies.txt again
+    echo   5. X/Twitter "Login required": x.com needs a logged-in cookie
+    echo      (x.com_cookies.txt or twitter.com_cookies.txt) plus the proxy
     echo.
     if not "%~1"=="" pause
     goto NEXT_ROUND
