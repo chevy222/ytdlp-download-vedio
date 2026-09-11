@@ -158,7 +158,7 @@ rem ---------- locate ffmpeg / ffprobe ----------
 rem FFMPEG_OPT is set OUTSIDE the if/else block on purpose: in the PATH
 rem fallback branch FFMPEG_EXE is only assigned at RUNTIME inside the
 rem block, and a %FFMPEG_EXE% inside ( ) would expand to the pre-block
-rem (empty) value - one of the cmd traps, see convert_h265.bat's README.
+rem (empty) value - a classic cmd trap.
 set "FFMPEG_OPT="
 set "FFMPEG_EXE="
 set "FFPROBE_EXE="
@@ -412,8 +412,7 @@ set "VTXT=video copy"
 set "ATXT=audio copy"
 rem The probes and REBUILD take the path via the CALLSRC variable, NOT as a
 rem call argument: `call` re-parses its arguments and doubles every ^ in
-rem them, so a title like "5^2.mp4" would no longer match the file on disk
-rem (same trap as convert_h265.bat - see its README).
+rem them, so a title like "5^2.mp4" would no longer match the file on disk.
 set "CALLSRC=%OUTFILE%"
 if "%TRANSCODE_ON%"=="1" call :PROBE_HEIGHT
 if "%AMPLIFY_ON%"=="1" call :PROBE_AUDIO
