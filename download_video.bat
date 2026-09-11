@@ -5,11 +5,13 @@ title Video Downloader - yt-dlp
 rem ============================================================================
 rem  Video Downloader (yt-dlp)
 rem
-rem  THIS FILE IS PURE ASCII. No BOM, no chcp. ASCII bytes are identical in
-rem  UTF-8, GBK and ANSI, so this script has no encoding problem under any
-rem  Windows code page. Do NOT save it as UTF-8 with BOM: cmd decodes the 3
-rem  BOM bytes as junk, "@echo off" turns into garbage and the whole script
-rem  gets echoed.
+rem  THIS FILE IS PURE ASCII AND MUST STAY THAT WAY. No BOM. ASCII bytes are
+rem  identical in UTF-8, GBK and ANSI, so the script text itself survives any
+rem  code page - and the `chcp 65001` in the code page block below is only
+rem  safe for exactly that reason. Do NOT save it as UTF-8 with BOM (cmd
+rem  decodes the 3 BOM bytes as junk, "@echo off" turns into garbage and the
+rem  whole script gets echoed) and do NOT paste non-ASCII text into it, not
+rem  even inside a comment - see the code page block for what breaks.
 rem
 rem  Usage:
 rem    1) Double click, paste a URL, press Enter
@@ -38,7 +40,14 @@ rem    - Cookie file auto-matched by URL host, then by site name; X/Twitter
 rem      additionally probes the sibling x.com / twitter.com cookie file since
 rem      either domain unlocks the other
 rem    - Single video only (--no-playlist), no overwrite
-rem    - Output: Desktop root
+rem    - Output: the folder this cmd window is sitting in, Desktop as the
+rem      fallback (see OUT_MODE). Double clicking the .bat starts cmd in this
+rem      script's own folder, which is not where a downloaded video belongs,
+rem      so that case falls through to the Desktop
+rem    - The console code page is switched to UTF-8 while running. The
+rem      finished file name has to survive a round trip through text twice
+rem      and a 936/GBK console destroys every emoji title silently - see the
+rem      code page block below. Safe only because this file is pure ASCII
 rem ============================================================================
 
 rem ############################ CONFIG ############################
@@ -53,9 +62,20 @@ rem Node.js directory. YouTube needs a JS runtime now; yt-dlp only enables
 rem deno by default. Node is used here because it is already installed.
 set "NODE_DIR=D:\Software\node-v26.4.0-win-x64"
 
-rem Output directory (Desktop root). Falls back to OneDrive\Desktop if the
+rem Where the download goes:
+rem   cwd     = the folder this cmd window is in, when that folder is a sane
+rem             place to drop a video. Opening a cmd window yourself, cd-ing
+rem             somewhere and running the script puts the file THERE.
+rem             Double clicking the .bat, dragging a link onto it, or a
+rem             shortcut whose "start in" is the default all leave cmd inside
+rem             this script's own folder, which nobody wants videos in, so
+rem             those fall back to the Desktop.
+rem   desktop = always the Desktop, ignore the current folder.
+set "OUT_MODE=cwd"
+
+rem Fixed / fallback output directory. Falls back to OneDrive\Desktop if the
 rem local profile Desktop does not exist.
-set "OUT_DIR=%USERPROFILE%\Desktop"
+set "DESKTOP_DIR=%USERPROFILE%\Desktop"
 
 rem SOCKS5 proxy for YouTube / Pornhub / X(Twitter) only
 set "PROXY_URL=socks5://127.0.0.1:10808"
@@ -118,6 +138,39 @@ set "AUTO_UPDATE=0"
 
 rem ################################################################
 
+rem ---------- console code page ----------
+rem Two steps below round trip a FILE NAME through text, and cmd decodes both
+rem with the console code page:
+rem   * yt-dlp --print-to-file records the finished path (verified: UTF-8,
+rem     no BOM, CRLF terminated)
+rem   * dir /b, used to find the newest *.mp4
+rem A Chinese Windows console is 936 (GBK), which cannot represent an emoji at
+rem all and substitutes "?". Measured on this machine, with a title holding one
+rem emoji between two CJK words (the emoji is written as its code point here on
+rem purpose - this file must stay pure ASCII, see the chcp note at the end):
+rem   dir /b  ->  the title with U+26A1 replaced by ONE "?"
+rem   dir /b  ->  the title with U+1F600 replaced by TWO "?"  (surrogate pair)
+rem and the yt-dlp record comes back as mojibake. The "?" case is far worse
+rem than it looks: "?" is a WILDCARD, so "if exist" cheerfully reports the file
+rem as present, ffprobe then receives a literal "?" and cannot open it, every
+rem probe file comes back empty, NEEDV/NEEDA stay 0 and the whole post-process
+rem is skipped without a single word of warning - no amplify, no downscale.
+rem Switching the console to UTF-8 makes both round trips lossless.
+rem Safe here ONLY because this file contains no byte above 0x7F: cmd re-reads
+rem the script with the new code page, and for ASCII bytes every code page
+rem agrees. Do NOT paste non-ASCII text into this file while the chcp line
+rem stands. OLDCP is restored on the way out (:END / :FATAL).
+for /f "tokens=2 delims=:" %%i in ('chcp') do set "OLDCP=%%i"
+chcp 65001 >nul
+
+rem ---------- temp files left behind by an interrupted run ----------
+rem Every run picks a fresh %RANDOM% suffix, so the files a crashed run leaves
+rem in %TEMP% are never reused and never reused means never cleaned. Normal
+rem exits remove all of them (:END); this sweeps up after the abnormal ones.
+rem A second instance running at the same time only loses probe files, and
+rem those are recreated by the very next redirect, so the race is harmless.
+del "%TEMP%\ytdlp_last_*.txt" "%TEMP%\ytdlp_h_*.txt" "%TEMP%\ytdlp_cnt_*.txt" "%TEMP%\ytdlp_vol_*.txt" >nul 2>&1
+
 rem Temp files: %RANDOM% suffix so two instances do not clobber each other.
 rem (Tried capturing ffprobe output with for /f instead; cmd eats bare `=` as
 rem a separator inside the in() clause, and quoting the exe path AND the args
@@ -127,8 +180,8 @@ rem yt-dlp writes the final file path here. The output name comes from the
 rem video title, so this file is the only way for the post-processing step to
 rem learn what was actually written.
 set "LASTFILE=%TEMP%\ytdlp_last_%RND%.txt"
-rem video probe: "codec_name,height" of stream v:0 - feeds both the height
-rem check below and REBUILD's cover-art detection (MAINV)
+rem video probe: "codec_name,width,height" of stream v:0 - feeds the size
+rem check below, and its codec_name feeds REBUILD's cover-art detection (MAINV)
 set "HFILE=%TEMP%\ytdlp_h_%RND%.txt"
 rem audio probe: one bit_rate line per audio track - line count = track
 rem count, first line = a:0 bitrate
@@ -143,8 +196,7 @@ if exist "%YTDLP_DIR%\yt-dlp.exe" set "YTDLP=%YTDLP_DIR%\yt-dlp.exe"
 if not defined YTDLP for /f "delims=" %%i in ('where yt-dlp.exe 2^>nul') do if not defined YTDLP set "YTDLP=%%i"
 if not defined YTDLP (
     echo [ERROR] yt-dlp.exe not found, check YTDLP_DIR
-    pause
-    exit /b 1
+    goto FATAL
 )
 
 rem ---------- optional self update ----------
@@ -184,14 +236,16 @@ if exist "%NODE_DIR%\node.exe" (
 )
 if not defined JSRT_OPT echo [WARN] no node/deno found, YouTube will fail, other sites are fine
 
-rem ---------- verify Desktop ----------
+rem ---------- decide where the download goes ----------
+rem %CD% is the folder this cmd window was opened in; :PICK_CWD vets it and
+rem leaves OUT_DIR empty when it is not a place to drop videos.
+set "OUT_DIR="
+if /i not "%OUT_MODE%"=="desktop" call :PICK_CWD
+if not defined OUT_DIR set "OUT_DIR=%DESKTOP_DIR%"
+if not exist "%OUT_DIR%" if defined OneDrive if exist "%OneDrive%\Desktop" set "OUT_DIR=%OneDrive%\Desktop"
 if not exist "%OUT_DIR%" (
-    if defined OneDrive if exist "%OneDrive%\Desktop" set "OUT_DIR=%OneDrive%\Desktop"
-)
-if not exist "%OUT_DIR%" (
-    echo [ERROR] Desktop folder not found
-    pause
-    exit /b 1
+    echo [ERROR] no usable output folder: "%OUT_DIR%"
+    goto FATAL
 )
 
 rem ---------- quality / codec policy ----------
@@ -322,7 +376,7 @@ echo.
 rem Baseline for the post-process fallback: the newest .mp4 already sitting in
 rem OUT_DIR. Taken before BOTH branches on purpose - if list mode ("f URL") ran
 rem without a baseline, the fallback would see the current newest file as "new"
-rem and rebuild some unrelated video off the Desktop.
+rem and rebuild some unrelated video that was already in the output folder.
 call :NEWEST_MP4
 set "MP4_BEFORE=%MP4_NEWEST%"
 
@@ -373,20 +427,24 @@ if not "%ERRORLEVEL%"=="0" (
 rem ---------- post-process: one rebuild pass for scale + amplify ----------
 rem Two ways to learn which file yt-dlp actually wrote (the name comes from the
 rem video title, so it cannot be known before the download):
-rem   1. --print-to-file stored the real path in %LASTFILE%. Good for ASCII
-rem      titles only. For a Chinese title it does NOT work: yt-dlp writes that
-rem      file as UTF-8, cmd reads it back in the console code page (936 on a
-rem      Chinese Windows), so the path comes out as mojibake and "if not exist"
-rem      reports "no such file". Reproduced in test: the mojibake path does not
-rem      resolve, while the real file is sitting right there.
+rem   1. --print-to-file stored the real path in %LASTFILE%. It is written as
+rem      UTF-8 without BOM, and the console code page is UTF-8 by the time it
+rem      is read back (see the chcp block up top), so EVERY title round trips
+rem      now - Chinese, emoji, both. It used to break on anything the console
+rem      code page could not represent: 936 turned the path into mojibake, "if
+rem      not exist" said "no such file" and the post-process was skipped in
+rem      silence.
 rem   2. Fall back to the newest *.mp4 in OUT_DIR, snapshotted before the
-rem      download (MP4_BEFORE). This name comes out of "dir", which encodes it
-rem      and cmd decodes it with the same code page, so Chinese titles survive
-rem      the round trip. CREATION time, not mtime: yt-dlp can stamp a file's
-rem      mtime with the server's Last-modified header.
-rem Both are skipped when yt-dlp downloaded nothing - e.g. --no-overwrites
-rem skipped the file because it already exists - in that case there is no new
-rem mp4 and nothing should be rebuilt.
+rem      download (MP4_BEFORE). Same code page, so also lossless now, and it
+rem      still covers the case where %LASTFILE% never appeared at all.
+rem      CREATION time, not mtime: yt-dlp can stamp a file's mtime with the
+rem      server's Last-modified header.
+rem Only when NEITHER path produced a file is nothing rebuilt. Note that
+rem --no-overwrites skipping an existing file is NOT such a case, measured by
+rem re-running the same URL: yt-dlp prints "has already been downloaded" and
+rem then STILL runs its post-processors (metadata, thumbnail) and STILL fires
+rem after_move, so %LASTFILE% does get written and the existing file is probed
+rem again. Harmless - the probes just conclude there is nothing to do.
 set "OUTFILE="
 if not exist "%LASTFILE%" goto RESOLVE_FALLBACK
 for /f "usebackq delims=" %%a in ("%LASTFILE%") do if not defined OUTFILE set "OUTFILE=%%a"
@@ -428,20 +486,73 @@ if not "%~1"=="" goto END
 goto LOOP
 
 :END
+rem ----- temp files: every life cycle in this script ends here -----
 del "%LASTFILE%" "%HFILE%" "%VOLFILE%" "%CNTFILE%" 2>nul
+rem hand the console back the code page it had before we borrowed it
+if defined OLDCP chcp%OLDCP% >nul 2>&1
 if "%~1"=="" pause
+exit /b 0
+
+:FATAL
+rem single exit for "cannot even start" errors, so the code page restore is
+rem never forgotten on the way out
+if defined OLDCP chcp%OLDCP% >nul 2>&1
+pause
+exit /b 1
+
+
+rem ==========================================================================
+rem  PICK_CWD - use the current folder as the output folder, unless it is a
+rem  place nobody wants a downloaded video in. Leaves OUT_DIR unset, which
+rem  means "use the Desktop" (see OUT_MODE in CONFIG).
+rem
+rem  %CD% is expanded once and then only ever compared/stored, never typed out
+rem  into a compound statement, so a folder name full of ( ) & ^ cannot break
+rem  the parser. Every test that reads a character back uses an ASCII-only
+rem  slice position on purpose.
+rem ==========================================================================
+:PICK_CWD
+set "CAND=%CD%"
+if not defined CAND exit /b 0
+
+rem Double click / drag a link onto the .bat / a plain shortcut: cmd starts in
+rem this script's own folder. Dropping videos next to the script is not what
+rem "download it" means, so fall through to the Desktop.
+set "SCRIPTHOME=%~dp0"
+if "%SCRIPTHOME:~-1%"=="\" set "SCRIPTHOME=%SCRIPTHOME:~0,-1%"
+if /i "%CAND%"=="%SCRIPTHOME%" exit /b 0
+
+rem a UNC path: yt-dlp could write there, but cmd's own file handling gets
+rem creative with \\server\share, so do not risk a 1 GB download on it
+if "%CAND:~0,2%"=="\\" exit /b 0
+
+rem a bare drive root, "C:" or "C:\": %CAND:~2% is empty in both
+if "%CAND:~1,1%"==":" if "%CAND:~2%"=="" exit /b 0
+
+rem the folders an elevated cmd (or a Task Scheduler job) starts in
+if /i "%CAND%"=="%SystemRoot%" exit /b 0
+if /i "%CAND%"=="%SystemRoot%\System32" exit /b 0
+if /i "%CAND%"=="%SystemRoot%\SysWOW64" exit /b 0
+
+rem must actually be writable. Finding that out from a failed 1 GB download
+rem is an expensive way to learn it. Probe file is deleted again right away.
+>"%CAND%\.ytdlp_write_test.tmp" echo x
+if not exist "%CAND%\.ytdlp_write_test.tmp" exit /b 0
+del "%CAND%\.ytdlp_write_test.tmp" >nul 2>&1
+
+set "OUT_DIR=%CAND%"
 exit /b 0
 
 
 rem ==========================================================================
 rem  NEWEST_MP4 - name (no path) of the most recently CREATED *.mp4 in OUT_DIR,
 rem  or empty when there is no mp4 at all. Used as the fallback way to find out
-rem  what yt-dlp wrote - see the post-process block in the main flow for why the
-rem  --print-to-file path cannot be trusted for non-ASCII titles.
+rem  what yt-dlp wrote - see the post-process block in the main flow.
 rem
 rem  "dir" is a child process, but that is the point: it emits the name in the
-rem  console code page and cmd reads the pipe back with the same code page, so a
-rem  Chinese title survives. A UTF-8 file written by yt-dlp does not.
+rem  console code page and cmd reads the pipe back with the same code page, so
+rem  the round trip is lossless. With the console on UTF-8 that now holds for
+rem  emoji titles too, not just Chinese ones.
 rem  /o-d /t:c sorts by creation time, newest first, so the first line wins.
 rem  Creation time rather than mtime because yt-dlp can stamp the mtime from
 rem  the server's Last-modified header, while a freshly written file always has
@@ -502,6 +613,10 @@ if "%MAINV%"=="1" (
         set "MAINH=%%d"
     )
 )
+rem Usually this only means "no video stream, audio only". It used to also be
+rem the silent symptom of a file name the console code page had destroyed, so
+rem say something out loud instead of skipping without a trace.
+if not defined MAINW echo   Transcode: no usable video info, skipped
 if not defined MAINW exit /b 0
 if not defined MAINH exit /b 0
 
@@ -644,7 +759,11 @@ if "%NEEDV%"=="1" (
 set "AOPT=-c:a copy"
 if "%NEEDA%"=="1" set "AOPT=-af volume=%GAIN%dB -c:a aac -b:a %ABK%k"
 
-set "TMPOUT=%SRC%.rebuild.mp4"
+rem The artefact deliberately does NOT end in .mp4. :NEWEST_MP4 scans *.mp4,
+rem and an artefact left behind by an interrupted run would otherwise pass for
+rem "the file yt-dlp just wrote" and get rebuilt into ...rebuild.rebuild. Being
+rem extension-less costs one -f mp4 on the output below.
+set "TMPOUT=%SRC%.rebuild"
 del "%TMPOUT%" >nul 2>&1
 
 echo   Rebuild  : %VTXT% / %ATXT%
@@ -652,7 +771,7 @@ echo   Rebuild  : %VTXT% / %ATXT%
     %DECOPT% -i "%SRC%" ^
     -map 0 -c copy ^
     %VOPT% %AOPT% ^
-    -movflags +faststart "%TMPOUT%"
+    -f mp4 -movflags +faststart "%TMPOUT%"
 if "%ERRORLEVEL%"=="0" goto REBUILD_CHECK
 
 rem QSV missing or broken -> software encode (only relevant when scaling).
@@ -666,7 +785,7 @@ del "%TMPOUT%" >nul 2>&1
     -c:v:%MAINV% libx265 -crf 22 -preset %X265_PRESET% -tag:v:%MAINV% hvc1 ^
     -filter:v:%MAINV% scale=%SCL% ^
     %AOPT% ^
-    -movflags +faststart "%TMPOUT%"
+    -f mp4 -movflags +faststart "%TMPOUT%"
 if not "%ERRORLEVEL%"=="0" goto REBUILD_FAILED
 
 :REBUILD_CHECK
