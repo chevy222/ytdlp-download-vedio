@@ -163,31 +163,60 @@ rem stands. OLDCP is restored on the way out (:END / :FATAL).
 for /f "tokens=2 delims=:" %%i in ('chcp') do set "OLDCP=%%i"
 chcp 65001 >nul
 
-rem ---------- temp files left behind by an interrupted run ----------
-rem Every run picks a fresh %RANDOM% suffix, so the files a crashed run leaves
-rem in %TEMP% are never reused and never reused means never cleaned. Normal
-rem exits remove all of them (:END); this sweeps up after the abnormal ones.
-rem A second instance running at the same time only loses probe files, and
-rem those are recreated by the very next redirect, so the race is harmless.
-del "%TEMP%\ytdlp_last_*.txt" "%TEMP%\ytdlp_h_*.txt" "%TEMP%\ytdlp_cnt_*.txt" "%TEMP%\ytdlp_vol_*.txt" >nul 2>&1
-
-rem Temp files: %RANDOM% suffix so two instances do not clobber each other.
+rem ---------- claim a private temp folder for this window ----------
+rem One folder per running window, holding this window's four scratch files:
+rem   last.txt - yt-dlp reports the finished path here (--print-to-file)
+rem   h.txt    - ffprobe: "codec_name,width,height" of the main video stream
+rem   cnt.txt  - ffprobe: one bit_rate line per audio track
+rem   vol.txt  - ffmpeg volumedetect output
+rem
+rem Why a folder, and why NOT %RANDOM%: on this machine %RANDOM% cannot tell two
+rem windows apart at all. Measured - four cmd.exe instances started together
+rem printed the same sequence, and another round started 50 ms later printed
+rem exactly the same numbers again:
+rem   7617 23633 1235 23274
+rem The generator is seeded per second, not per process. The old
+rem ytdlp_<RANDOM>.txt names therefore let two windows share every file name,
+rem and that broke things for real: the window that finished a probe first
+rem deleted the other window's probe file, and - much worse - both windows read
+rem the SAME last.txt, so one window could end up post-processing the other
+rem window's video. Reproduced with two concurrent downloads.
+rem
+rem mkdir is atomic (it fails when the folder exists), so instead of guessing a
+rem name this walks 1, 2, 3 ... and takes the first number that nobody holds.
+rem Two windows can never land on the same number, and no randomness is needed.
+rem
 rem (Tried capturing ffprobe output with for /f instead; cmd eats bare `=` as
 rem a separator inside the in() clause, and quoting the exe path AND the args
 rem breaks cmd's quote pairing - see workspace notes. Temp files it is.)
-set "RND=%RANDOM%"
-rem yt-dlp writes the final file path here. The output name comes from the
-rem video title, so this file is the only way for the post-processing step to
-rem learn what was actually written.
-set "LASTFILE=%TEMP%\ytdlp_last_%RND%.txt"
-rem video probe: "codec_name,width,height" of stream v:0 - feeds the size
-rem check below, and its codec_name feeds REBUILD's cover-art detection (MAINV)
-set "HFILE=%TEMP%\ytdlp_h_%RND%.txt"
-rem audio probe: one bit_rate line per audio track - line count = track
-rem count, first line = a:0 bitrate
-set "CNTFILE=%TEMP%\ytdlp_cnt_%RND%.txt"
-rem volumedetect peak output
-set "VOLFILE=%TEMP%\ytdlp_vol_%RND%.txt"
+set "SLOT=0"
+:CLAIM_SLOT
+set /a SLOT+=1
+if %SLOT% GTR 500 (
+    echo [ERROR] cannot create a private temp folder, is the temp drive full?
+    goto FATAL
+)
+mkdir "%TEMP%\ytdlp_%SLOT%" 2>nul
+if not "%ERRORLEVEL%"=="0" goto CLAIM_SLOT
+set "TMPDIR=%TEMP%\ytdlp_%SLOT%"
+set "LASTFILE=%TMPDIR%\last.txt"
+set "HFILE=%TMPDIR%\h.txt"
+set "CNTFILE=%TMPDIR%\cnt.txt"
+set "VOLFILE=%TMPDIR%\vol.txt"
+
+rem Life cycle: each probe deletes its own file the moment it has read it, the
+rem rest go at the end of the round (:NEXT_ROUND) together with the folder, and
+rem :END repeats that as a net. A window sitting at the prompt therefore holds
+rem nothing at all.
+rem NOTHING is ever deleted automatically at start-up: cmd cannot tell "another
+rem window is using this" from "a window was killed mid-round", so this script
+rem only ever touches its own folder. Debris from a killed window is counted
+rem here (read-only) and cleared by the explicit "c" command.
+set "LEFTOVER=0"
+for /d %%d in ("%TEMP%\ytdlp_*") do set /a LEFTOVER+=1
+rem dir /b, not `for %%f in (...)` : a wildcard that matches nothing makes that
+rem form yield the literal pattern once, which would report a phantom leftover.
+for /f %%f in ('dir /b "%TEMP%\ytdlp_*.txt" 2^>nul') do set /a LEFTOVER+=1
 
 
 rem ---------- locate yt-dlp ----------
@@ -280,9 +309,14 @@ if not "%~1"=="" (
 echo.
 echo ============================================================
 echo   Video Downloader   output: "%OUT_DIR%"
-echo   Paste a URL and press Enter   ("f URL" = list formats only)
-echo   Type q and press Enter to quit
+echo   Paste a URL and press Enter
+echo   f URL = list formats only    q = quit    c = clear temp files
 echo ============================================================
+if not defined LEFT_SHOWN if %LEFTOVER% GTR 0 (
+    echo   Note: leftover ytdlp temp files or folders are still in the temp
+    echo         folder. Type c and press Enter to clear them.
+)
+set "LEFT_SHOWN=1"
 echo.
 
 set "URL="
@@ -292,7 +326,9 @@ rem an empty line is almost always a slip of the Enter key; only q quits
 if not defined URL goto LOOP
 
 :GOT_URL
-rem drop the file path recorded by the previous round
+rem Defensive only: :NEXT_ROUND already removed this window's scratch files when
+rem the previous round ended. The folder is private to this window, so this can
+rem never touch another window's files.
 del "%LASTFILE%" >nul 2>&1
 
 rem strip quotes
@@ -309,6 +345,11 @@ rem strip all spaces (also trims leading / trailing)
 set "URL=%URL: =%"
 if not defined URL goto LOOP
 for %%q in (q quit exit) do if /i "%URL%"=="%%q" goto END
+
+rem "c" clears temp files left by runs that were killed. It is the ONLY action
+rem in this script that may touch another window's files, which is exactly why
+rem it is never automatic - do not press it while another window is mid-download.
+if /i "%URL%"=="c" goto CLEAN_NOW
 
 rem ---------- extract host from the URL ----------
 rem Done BEFORE site detection: the host is the only reliable place to match a
@@ -482,12 +523,24 @@ echo.
 echo   Done. Files are in: "%OUT_DIR%"
 
 :NEXT_ROUND
+rem ----- this round is over: drop this window's own scratch folder -----
+rem Every route through the main flow passes here - success, yt-dlp failure,
+rem "already downloaded" skip, even list mode - so a window waiting at the
+rem prompt always holds zero temp files, and two windows cannot disturb each
+rem other. rd refuses a folder that is not empty, which is a useful safety
+rem property: anything unexpected still in there keeps the folder alive and the
+rem start-up notice will mention it.
+del "%LASTFILE%" "%HFILE%" "%VOLFILE%" "%CNTFILE%" 2>nul
+rd "%TMPDIR%" 2>nul
 if not "%~1"=="" goto END
 goto LOOP
 
 :END
-rem ----- temp files: every life cycle in this script ends here -----
+rem Safety net: the probes and :NEXT_ROUND have normally removed all of this
+rem already, it only survives here if the flow was cut short. Own folder only,
+rem so it can never hit another window.
 del "%LASTFILE%" "%HFILE%" "%VOLFILE%" "%CNTFILE%" 2>nul
+rd "%TMPDIR%" 2>nul
 rem hand the console back the code page it had before we borrowed it
 if defined OLDCP chcp%OLDCP% >nul 2>&1
 if "%~1"=="" pause
@@ -499,6 +552,33 @@ rem never forgotten on the way out
 if defined OLDCP chcp%OLDCP% >nul 2>&1
 pause
 exit /b 1
+
+
+rem ==========================================================================
+rem  CLEAN_TEMP - remove EVERY window's scratch folder, including a folder that
+rem  belongs to a download running right now (which would then lose its probe
+rem  files, or fail to record the finished path). That is exactly why it is
+rem  reached only from the explicit "c" command and never automatically:
+rem  do not press c while another window is mid-download.
+rem ==========================================================================
+:CLEAN_TEMP
+for /d %%d in ("%TEMP%\ytdlp_*") do rd /s /q "%%d" 2>nul
+rem The flat ytdlp_*.txt names are what versions before the per-window folder
+rem used; sweep those too so upgrading does not leave them behind forever.
+del "%TEMP%\ytdlp_*.txt" >nul 2>&1
+exit /b 0
+
+
+rem ==========================================================================
+rem  CLEAN_NOW - "c" was typed at the prompt. Clean up, then behave like any
+rem  other round end: an argument-mode / drag-and-drop run exits, a looping
+rem  (double-clicked) one goes straight back to the prompt.
+rem ==========================================================================
+:CLEAN_NOW
+call :CLEAN_TEMP
+set "LEFTOVER=0"
+if not "%~1"=="" goto END
+goto LOOP
 
 
 rem ==========================================================================
@@ -572,6 +652,14 @@ rem  Also sets MAINV (cover-art stream offset) and SCL (orientation-aware
 rem  scale target for REBUILD: cap the short side, keep the other side).
 rem ==========================================================================
 :PROBE_HEIGHT
+rem Wrapper: the body has a dozen early exits, so the temp file is removed here
+rem once, instead of at every one of them. HFILE is only ever read inside the
+rem body - grep it if you doubt that - so this is the right place.
+call :PROBE_HEIGHT_IMPL
+del "%HFILE%" >nul 2>&1
+exit /b 0
+
+:PROBE_HEIGHT_IMPL
 if not defined FFPROBE_EXE exit /b 0
 set "SRC=%CALLSRC%"
 if not defined SRC exit /b 0
@@ -656,6 +744,13 @@ rem       noise floor pushed to full scale
 rem    7) audio bitrate follows the source, clamped to 64-192k
 rem ==========================================================================
 :PROBE_AUDIO
+rem Wrapper, same reason as PROBE_HEIGHT: CNTFILE and VOLFILE are read only
+rem inside the body, so they are dropped here after it returns.
+call :PROBE_AUDIO_IMPL
+del "%CNTFILE%" "%VOLFILE%" >nul 2>&1
+exit /b 0
+
+:PROBE_AUDIO_IMPL
 if not defined FFMPEG_EXE exit /b 0
 if not defined FFPROBE_EXE exit /b 0
 set "SRC=%CALLSRC%"
